@@ -48,38 +48,55 @@ impl Config {
         question: Option<&str>,
         model: Option<&str>,
     ) -> Result<Prompt, String> {
-        match question {
-            None => {
-                let label =
-                    self.default_prompt.as_ref().ok_or_else(|| {
-                        "no default prompt specified".to_string()
-                    })?;
+        if let Some(x) = question
+            && !x.starts_with('@')
+        {
+            // Question is text.
 
-                self.find_prompt(label).ok_or_else(|| {
-                    format!("default prompt '{label}' not found")
-                })
-            }
-            Some(x) => {
-                if x.starts_with('@') {
+            let model =
+                model.or(self.default_model.as_deref()).ok_or_else(
+                    || "no default model specified".to_string(),
+                )?;
+
+            Ok(Prompt {
+                label: String::new(),
+                question: x.to_string(),
+                model: model.to_string(),
+            })
+        } else {
+            let mut prompt = match question {
+                None => {
+                    // Question is empty.
+
+                    let label = self
+                        .default_prompt
+                        .as_ref()
+                        .ok_or_else(|| {
+                            "no default prompt specified".to_string()
+                        })?;
+
+                    self.find_prompt(label).ok_or_else(|| {
+                        format!("default prompt '{label}' not found")
+                    })?
+                }
+                Some(x) => {
+                    // Question starts with '@'.
+
                     let label: String = x.chars().skip(1).collect();
 
                     self.find_prompt(&label).ok_or_else(|| {
                         format!("prompt '{label}' not found")
-                    })
-                } else {
-                    let model = model
-                        .or(self.default_model.as_deref())
-                        .ok_or_else(|| {
-                            "no default model specified".to_string()
-                        })?;
-
-                    Ok(Prompt {
-                        label: String::new(),
-                        question: x.to_string(),
-                        model: model.to_string(),
-                    })
+                    })?
                 }
+            };
+
+            if let Some(x) = model {
+                // Use the model the user has given us instead of the
+                // one pre-specified for the prompt.
+                prompt.model = x.to_string();
             }
+
+            Ok(prompt)
         }
     }
 
@@ -226,18 +243,23 @@ mod tests {
     }
 
     #[test]
-    fn resolve_prompt_ignores_model_if_question_is_label() {
+    fn resolve_prompt_uses_the_given_model_if_question_is_label() {
         let model = "lorem-ipsum";
         let config = make_config();
+        let mut expected_1 = config.prompt[0].clone();
+        let mut expected_2 = config.prompt[1].clone();
+
+        expected_1.model = model.to_string();
+        expected_2.model = model.to_string();
 
         assert_eq!(
             config.resolve_prompt(Some("@foo"), Some(model)),
-            Ok(config.prompt[0].clone())
+            Ok(expected_1)
         );
 
         assert_eq!(
             config.resolve_prompt(Some("@bar"), Some(model)),
-            Ok(config.prompt[1].clone())
+            Ok(expected_2)
         );
 
         assert_eq!(
