@@ -22,6 +22,8 @@ struct Args {
     #[arg(long, short, num_args = 1..)]
     include: Option<Vec<String>>,
 
+    /// Use this model, even if the prompt is configured with a
+    /// different one.
     #[arg(long, short)]
     model: Option<String>,
 
