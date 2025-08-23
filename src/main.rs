@@ -33,6 +33,10 @@ struct Args {
     #[arg(long, short = 't')]
     keep_think_block: bool,
 
+    /// Print usage data to stderr.
+    #[arg(long, short)]
+    verbose: bool,
+
     /// Either plain text or '@' + prompt label to use a prompt from the
     /// configuration.  If no question is given, the default prompt will
     /// be used.  May be augmented with context.
@@ -72,6 +76,11 @@ fn process() -> Result<(), String> {
 
     if !args.keep_think_block {
         response.remove_think_block();
+    }
+
+    if args.verbose {
+        eprintln!("note: prompt tokens: {}", response.prompt_tokens);
+        eprintln!("note: total time: {}", response.approximate_total);
     }
 
     if args.output_json {
