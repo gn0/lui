@@ -46,6 +46,15 @@ impl Server {
                 .as_str()
                 .ok_or_else(|| "malformed response".to_string())?
                 .to_string(),
+            prompt_tokens: response["usage"]["prompt_tokens"]
+                .as_u64()
+                .ok_or_else(|| {
+                    "usage.prompt_tokens is not integer".to_string()
+                })?,
+            approximate_total: response["usage"]["approximate_total"]
+                .as_str()
+                .ok_or_else(|| "malformed response".to_string())?
+                .to_string(),
         })
     }
 }
@@ -65,6 +74,8 @@ struct Message {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Output {
     pub message: String,
+    pub prompt_tokens: u64,
+    pub approximate_total: String,
 }
 
 impl Output {
