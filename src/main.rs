@@ -8,9 +8,6 @@ mod server;
 use crate::config::Config;
 use crate::context::Context;
 
-// TODO Add support for omitting the <think></think> block in the
-// model's response.
-
 /// Command-line interface to open-webui.
 #[derive(Debug, Parser)]
 #[command(version, about)]
@@ -31,6 +28,10 @@ struct Args {
     /// Print the model's response in JSON form.
     #[arg(long, short = 'j')]
     output_json: bool,
+
+    /// Keep the <think></think> block if the model's response has it.
+    #[arg(long, short = 't')]
+    keep_think_block: bool,
 
     /// Either plain text or '@' + prompt label to use a prompt from the
     /// configuration.  If no question is given, the default prompt will
@@ -65,9 +66,13 @@ fn process() -> Result<(), String> {
         panic!("RAG support is not yet implemented");
     }
 
-    let response = config
+    let mut response = config
         .server
         .send(&prompt.model, &prompt.render(&context))?;
+
+    if !args.keep_think_block {
+        response.remove_think_block();
+    }
 
     if args.output_json {
         let response_json = serde_json::to_string(&response)

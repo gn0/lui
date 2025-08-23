@@ -66,3 +66,19 @@ struct Message {
 pub struct Output {
     pub message: String,
 }
+
+impl Output {
+    /// Removes the <think></think> block at the beginning of the
+    /// message if the message contains one.
+    pub fn remove_think_block(&mut self) {
+        if self.message.starts_with("<think>")
+            && let Some(pos) = self.message.find("</think>")
+        {
+            self.message = self
+                .message
+                .split_off(pos + 8)
+                .trim_start_matches(['\r', '\n'])
+                .to_string();
+        }
+    }
+}
