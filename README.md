@@ -2,6 +2,8 @@
 
 LLMs for the command line via open-webui.
 
+Compiling lui requires Rust 1.88.0 or newer because it uses [let chains](https://blog.rust-lang.org/2025/06/26/Rust-1.88.0/#let-chains).
+
 ## Features
 
 + [X] Configuration in `$XDG_CONFIG_HOME/lui/config.toml`.
