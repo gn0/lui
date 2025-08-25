@@ -1,4 +1,5 @@
 use clap::Parser;
+use std::io::Write;
 
 mod config;
 mod context;
@@ -7,6 +8,7 @@ mod server;
 
 use crate::config::Config;
 use crate::context::Context;
+use crate::server::remove_think_block;
 
 /// Command-line interface to open-webui.
 #[derive(Debug, Parser)]
@@ -34,6 +36,10 @@ struct Args {
     /// Keep the <think></think> block if the model's response has it.
     #[arg(long, short = 't')]
     keep_think_block: bool,
+
+    /// Don't stream the response, only print when complete.
+    #[arg(long, short = 'S')]
+    no_stream: bool,
 
     /// Print usage data to stderr.
     #[arg(long, short)]
@@ -72,26 +78,94 @@ fn process() -> Result<(), String> {
         panic!("RAG support is not yet implemented");
     }
 
-    let mut response = config
-        .server
-        .send(&prompt.model, &prompt.render(&context))?;
+    let response = config.server.send(
+        &prompt.model,
+        &prompt.render(&context),
+        !args.no_stream,
+    )?;
 
-    if !args.keep_think_block {
-        response.remove_think_block();
-    }
+    let mut prev_message: Option<String> = None;
+    let mut prev_printed: Option<String> = None;
+    let mut inside_think_block = false;
 
-    if args.verbose {
-        eprintln!("note: prompt tokens: {}", response.prompt_tokens);
-        eprintln!("note: total time: {}", response.approximate_total);
-    }
+    for output in response {
+        let mut output = output;
+        let skip_this_output;
 
-    if args.output_json {
-        let response_json = serde_json::to_string(&response)
-            .map_err(|x| format!("{x}"))?;
+        if args.keep_think_block {
+            skip_this_output = false;
+        } else if !args.keep_think_block && args.no_stream {
+            // Remove <think></think> block from complete output.  Also
+            // normalize trailing newlines.
+            //
 
-        println!("{response_json}");
-    } else {
-        println!("{}", response.message.trim_end());
+            skip_this_output = false;
+            output.message = remove_think_block(&output.message);
+            output.message = format!("{}\n", output.message.trim_end());
+        } else {
+            // Remove <think></think> block from token stream.
+            //
+            if prev_message.is_none() && output.message == "<think>" {
+                // First token is <think>.
+                //
+                skip_this_output = true;
+                inside_think_block = true;
+            } else if inside_think_block {
+                // First token was <think>.
+                //
+
+                skip_this_output = true;
+
+                if output.message == "</think>" {
+                    // Current token closes <think></think> block.
+                    //
+                    inside_think_block = false;
+                }
+            } else {
+                // Normalize leading newlines.
+                //
+                if prev_printed.is_none() {
+                    output.message =
+                        output.message.trim_start().to_string();
+                }
+
+                skip_this_output = output.message.is_empty();
+            }
+        }
+
+        if !skip_this_output {
+            if args.output_json {
+                let output_json = serde_json::to_string(&output)
+                    .map_err(|x| format!("{x}"))?;
+
+                println!("{output_json}");
+            } else {
+                print!("{}", output.message);
+
+                let _ = std::io::stdout().flush();
+
+                if output.message.is_empty()
+                    && let Some(x) = prev_message
+                    && !x.ends_with('\n')
+                {
+                    println!();
+                }
+            }
+
+            prev_printed = Some(output.message.clone());
+        }
+
+        prev_message = Some(output.message);
+
+        if args.verbose {
+            if let Some(x) = output.prompt_tokens {
+                eprintln!("note: prompt tokens: {x}");
+            }
+
+            if let Some(x) = output.approximate_total {
+                eprintln!("note: total time: {x}");
+            }
+        }
     }
 
     Ok(())

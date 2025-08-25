@@ -12,7 +12,7 @@ LLMs for the command line via open-webui.
   - [X] Text as context.
   - [ ] PDFs and Word documents as context.
   - [ ] Image files as context.
-+ [ ] Stream the tokens from open-webui.
++ [X] Stream the tokens from open-webui.
 
 ## Usage examples
 

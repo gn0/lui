@@ -351,6 +351,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "glob",
+ "http",
  "serde",
  "serde_json",
  "toml",
