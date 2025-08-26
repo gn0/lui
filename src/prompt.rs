@@ -8,7 +8,8 @@ pub struct Prompt {
 }
 
 impl Prompt {
-    /// Formats the prompt as Markdown for the model.
+    /// Converts the prompt into a Markdown representation that can be
+    /// sent to the model.
     pub fn as_message(&self) -> String {
         format!("# Prompt\n\n{}", self.question)
     }

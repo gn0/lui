@@ -17,6 +17,23 @@ pub struct Server {
 }
 
 impl Server {
+    /// Send a prompt and a context to open-webui.
+    ///
+    /// Returns an `OutputReader::TokenIter` if `stream` is true and an
+    /// `OutputReader::OutputIter` otherwise.
+    ///
+    /// # Errors
+    ///
+    /// This method returns an error if
+    ///
+    /// - the HTTP request to the server fails or
+    /// - the server's response is
+    ///
+    ///   * not valid JSON,
+    ///   * doesn't contain a message field,
+    ///   * contains a non-integer prompt token count, or
+    ///   * contains a message or an approximate duration that is not
+    ///     valid UTF-8.
     pub fn send(
         &self,
         prompt: &Prompt,
@@ -72,6 +89,18 @@ impl Server {
     }
 }
 
+/// Reads the complete output from open-webui for a non-streamed
+/// request.
+///
+/// # Errors
+///
+/// This function returns an error if the server's response is
+///
+/// - not valid JSON,
+/// - doesn't contain a message field,
+/// - contains a non-integer prompt token count, or
+/// - contains a message or an approximate duration that is not valid
+///   UTF-8.
 fn get_complete_output(
     response: http::response::Response<ureq::Body>,
 ) -> Result<Output, String> {
@@ -155,6 +184,18 @@ pub struct TokenIter<'a> {
 impl<'a> Iterator for TokenIter<'a> {
     type Item = Output;
 
+    /// Iterates over tokens sent by open-webui in a streamed response.
+    ///
+    /// # Errors
+    ///
+    /// This method returns an error if
+    ///
+    /// - the server sends invalid JSON for any of the tokens,
+    /// - the server sends a malformed line (missing the `data: `
+    ///   prefix),
+    /// - a prompt token count is present but not a valid integer,
+    /// - an approximate duration is present but not valid UTF-8, or
+    /// - the message is present but not valid UTF-8.
     fn next(&mut self) -> Option<Self::Item> {
         let mut buffer = String::new();
 
@@ -207,6 +248,8 @@ pub struct Output {
     pub approximate_total: Option<String>,
 }
 
+/// Removes the leading `<think></think>` block from a complete
+/// response.
 pub fn remove_think_block(message: &str) -> String {
     if message.starts_with("<think>")
         && let Some(pos) = message.find("</think>")

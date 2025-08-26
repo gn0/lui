@@ -47,9 +47,10 @@ impl Context {
     ///
     /// This method returns an error if
     ///
-    /// - the glob pattern is invalid or
+    /// - the glob pattern is invalid,
     /// - there was an error while traversing the filesystem to find
-    ///   files that match the glob pattern.
+    ///   files that match the glob pattern, or
+    /// - the content of one of the matched files is not valid UTF-8.
     pub fn load_named(&mut self, pattern: &str) -> Result<(), String> {
         for maybe_path in
             glob(pattern).map_err(|x| format!("{pattern}: {x}"))?
@@ -68,6 +69,18 @@ impl Context {
         Ok(())
     }
 
+    /// Creates an empty context and loads each file that is matched by
+    /// a pattern in `include`.
+    ///
+    /// # Errors
+    ///
+    /// This method returns an error if
+    ///
+    /// - any of the specified glob patterns are invalid,
+    /// - there was an error while traversing the filesystem to find
+    ///   files that match the glob pattern, or
+    /// - either stdin or the content of one of the matched files is not
+    ///   valid UTF-8.
     pub fn load(include: Option<&[String]>) -> Result<Self, String> {
         let mut context = Self::new();
 
@@ -93,6 +106,8 @@ impl Context {
         Ok(context)
     }
 
+    /// Converts each file in the context into a Markdown representation
+    /// that can be sent to the model.
     pub fn as_messages(&self) -> Vec<String> {
         let mut result = Vec::new();
 
