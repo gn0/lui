@@ -69,3 +69,8 @@ question = "What am I seeing here? Please summarize as if you were writing a mem
 model = "gemma3:27b"
 ```
 
+## License
+
+Lui is distributed under the GNU General Public License (GPL), version 3.
+See the file [LICENSE](./LICENSE) for more information.
+
