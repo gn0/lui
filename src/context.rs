@@ -1,4 +1,5 @@
 use glob::glob;
+use std::io::IsTerminal;
 
 pub type Label = String;
 pub type Content = String;
@@ -65,6 +66,31 @@ impl Context {
         }
 
         Ok(())
+    }
+
+    pub fn load(include: Option<&[String]>) -> Result<Self, String> {
+        let mut context = Self::new();
+
+        if let Some(patterns) = include {
+            for pattern in patterns {
+                if pattern == "-" {
+                    context.load_anonymous()?;
+                } else {
+                    context.load_named(pattern)?;
+                }
+            }
+        }
+
+        if context.anonymous.is_none()
+            && !std::io::stdin().is_terminal()
+        {
+            // The user didn't specify `--include -` but we are running
+            // in non-interactive mode, so the user may be sending
+            // anonymous context to us via a pipe.
+            context.load_anonymous()?;
+        }
+
+        Ok(context)
     }
 
     pub fn as_messages(&self) -> Vec<String> {

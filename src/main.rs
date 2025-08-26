@@ -61,17 +61,7 @@ fn process() -> Result<(), String> {
         args.model.as_deref(),
     )?;
 
-    let mut context = Context::new();
-
-    if let Some(ref include) = args.include {
-        for pattern in include {
-            if pattern == "-" {
-                context.load_anonymous()?;
-            } else {
-                context.load_named(pattern)?;
-            }
-        }
-    }
+    let context = Context::load(args.include.as_deref())?;
 
     if args.rag.is_some() {
         // TODO
