@@ -3,6 +3,9 @@ use serde_json::Value;
 use std::io::{BufRead, BufReader};
 use ureq::BodyReader;
 
+use crate::context::Context;
+use crate::prompt::Prompt;
+
 /// Access details for open-webui.
 #[derive(Debug, Deserialize)]
 pub struct Server {
@@ -16,8 +19,8 @@ pub struct Server {
 impl Server {
     pub fn send(
         &self,
-        model: &str,
-        message: &str,
+        prompt: &Prompt,
+        context: &Context,
         stream: bool,
     ) -> Result<OutputReader<'static>, String> {
         let uri = format!(
@@ -25,12 +28,23 @@ impl Server {
             self.host, self.port
         );
 
-        let request = Request {
-            model: model.to_string(),
-            messages: vec![Message {
+        let mut messages: Vec<_> = context
+            .as_messages()
+            .into_iter()
+            .map(|content| Message {
                 role: String::from("user"),
-                content: message.to_string(),
-            }],
+                content,
+            })
+            .collect();
+
+        messages.push(Message {
+            role: String::from("user"),
+            content: prompt.as_message(),
+        });
+
+        let request = Request {
+            model: prompt.model.to_string(),
+            messages,
             stream,
         };
 

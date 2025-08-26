@@ -1,5 +1,4 @@
 use glob::glob;
-use std::fmt;
 
 pub type Label = String;
 pub type Content = String;
@@ -67,36 +66,24 @@ impl Context {
 
         Ok(())
     }
-}
 
-impl fmt::Display for Context {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut buf = String::new();
+    pub fn as_messages(&self) -> Vec<String> {
+        let mut result = Vec::new();
 
-        if let Some(x) = &self.anonymous {
-            buf.push_str(&format!(
-                "## Unnamed input\n\n```\n{}\n```\n\n",
-                x.trim_end_matches(['\r', '\n'])
-            ));
-        }
-
-        for (label, content) in self.named.iter() {
-            buf.push_str(&format!(
-                "## File `{label}`\n\n```\n{}\n```\n\n",
+        if let Some(ref content) = self.anonymous {
+            result.push(format!(
+                "## Unnamed input\n\n```\n{}\n```",
                 content.trim_end_matches(['\r', '\n'])
             ));
         }
 
-        if !buf.is_empty() {
-            write!(
-                f,
-                "# Context\n\n\
-                 The user has provided the following context for the \
-                 question.\n\n\
-                 {buf}"
-            )?;
+        for (label, content) in self.named.iter() {
+            result.push(format!(
+                "## File `{label}`\n\n```\n{}\n```",
+                content.trim_end_matches(['\r', '\n'])
+            ));
         }
 
-        Ok(())
+        result
     }
 }

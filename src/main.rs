@@ -78,11 +78,8 @@ fn process() -> Result<(), String> {
         panic!("RAG support is not yet implemented");
     }
 
-    let response = config.server.send(
-        &prompt.model,
-        &prompt.render(&context),
-        !args.no_stream,
-    )?;
+    let response =
+        config.server.send(&prompt, &context, !args.no_stream)?;
 
     let mut prev_message: Option<String> = None;
     let mut prev_printed: Option<String> = None;
