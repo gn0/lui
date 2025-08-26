@@ -87,8 +87,9 @@ fn process() -> Result<(), String> {
             //
 
             skip_this_output = false;
-            output.message = remove_think_block(&output.message);
-            output.message = format!("{}\n", output.message.trim_end());
+
+            let clean = remove_think_block(&output.message);
+            output.message = format!("{}\n", clean.trim_end());
         } else {
             // Remove <think></think> block from token stream.
             //

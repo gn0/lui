@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::borrow::Cow;
 use std::io::{BufRead, BufReader};
 use ureq::BodyReader;
 
@@ -250,17 +251,19 @@ pub struct Output {
 
 /// Removes the leading `<think></think>` block from a complete
 /// response.
-pub fn remove_think_block(message: &str) -> String {
+pub fn remove_think_block(message: &str) -> Cow<'_, str> {
     if message.starts_with("<think>")
         && let Some(pos) = message.find("</think>")
     {
-        message
+        let clean = message
             .chars()
             .skip(pos + 8)
             .collect::<String>()
             .trim_start_matches(['\r', '\n'])
-            .to_string()
+            .to_string();
+
+        Cow::Owned(clean)
     } else {
-        message.to_string()
+        Cow::Borrowed(message)
     }
 }
