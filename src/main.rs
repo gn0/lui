@@ -17,7 +17,7 @@ struct Args {
     /// Files to feed to open-webui's RAG API for use with the prompt.
     /// (Can be glob patterns.)
     #[arg(long, short, num_args = 1..)]
-    files: Option<Vec<String>>,
+    rag: Option<Vec<String>>,
 
     /// Files to include in the prompt sent to the model.  (Can be glob
     /// patterns, or '-' for stdin.)
@@ -73,7 +73,7 @@ fn process() -> Result<(), String> {
         }
     }
 
-    if args.files.is_some() {
+    if args.rag.is_some() {
         // TODO
         panic!("RAG support is not yet implemented");
     }
