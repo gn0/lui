@@ -50,13 +50,13 @@ impl Server {
             .as_messages()
             .into_iter()
             .map(|content| Message {
-                role: String::from("user"),
+                role: "user".to_string(),
                 content,
             })
             .collect();
 
         messages.push(Message {
-            role: String::from("user"),
+            role: "user".to_string(),
             content: prompt.as_message(),
         });
 

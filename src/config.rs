@@ -31,7 +31,7 @@ impl Config {
     /// - the configuration file contains a parse error.
     pub fn load() -> Result<Self, String> {
         let path = get_config_path().ok_or_else(|| {
-            String::from("Home directory cannot be determined")
+            "Home directory cannot be determined".to_string()
         })?;
 
         let config: Config = toml::from_str(
