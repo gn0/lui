@@ -32,6 +32,30 @@ One way to assess whether this is happening is by calling lui with the `-v` or (
 
 ## Usage examples
 
+### Basic configuration
+
+Lui needs access to an open-webui API endpoint, and you probably also want to set a default model.
+Add the following to `$HOME/.config/lui/config.toml`:
+
+```toml
+# Assuming open-webui has gemma3:27b available:
+default-model = "gemma3:27b"
+
+[server]
+# Assuming open-webui is listening at 127.0.0.1:3000:
+host = "127.0.0.1"
+port = 3000
+api-key = "..."
+```
+
+You can get an API key from open-webui by
+
+1. clicking on your name in the bottom-left corner and navigating to "Settings,"
+2. clicking on "Admin Panel" in the bottom-left corner of the Settings window,
+3. making sure that "Enable API Key" is turned on,
+4. clicking on your name again and navigating to "Settings," and
+5. clicking on "Show" next to "API keys" on the "Account" tab of the Settings window.
+
 ### Fill in docstring gaps
 
 It is good practice for docstrings to list the error conditions for functions that return `Result`:
