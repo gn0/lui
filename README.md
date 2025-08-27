@@ -10,19 +10,20 @@ Compiling lui requires Rust 1.88.0 or newer because it uses [let chains](https:/
 
 1. [Features](#features)
 2. [Caveat](#caveat)
-3. [Usage examples](#usage-examples)
+3. [Installation](#installation)
+4. [Usage examples](#usage-examples)
    - [Basic configuration](#basic-configuration)
    - [Fill in docstring gaps](#fill-in-docstring-gaps)
    - [Review staged changes](#review-staged-changes)
    - [Ask ad hoc questions](#ask-ad-hoc-questions)
-4. [Detailed usage](#detailed-usage)
+5. [Detailed usage](#detailed-usage)
    - [No context](#no-context)
    - [Anonymous context](#anonymous-context)
    - [Multiple named files as context](#multiple-named-files-as-context)
    - [Glob pattern to define context](#glob-pattern-to-define-context)
    - [Pre-specified prompt](#pre-specified-prompt)
    - [Default prompt, etc.](#default-prompt-etc)
-5. [License](#license)
+6. [License](#license)
 
 ## Features
 
@@ -47,6 +48,27 @@ Models have a limited number of prompt tokens.
 If a file that you include in the context is too large, then the model will silently ignore it even though lui does send it in the request.
 
 One way to assess whether this is happening is by calling lui with the `-v` or (`--verbose`) command-line option, in which case it will print the prompt token count returned by open-webui to stderr.
+
+## Installation
+
+If you have Cargo, then run:
+
+```sh
+cargo install --locked --git https://github.com/gn0/lui.git
+```
+
+If `$HOME/.cargo/bin` is not in your `PATH` environment variable, then you also need to run:
+
+```sh
+export PATH=$HOME/.cargo/bin:$PATH
+```
+
+To make this setting permanent:
+
+```sh
+echo 'export PATH=$HOME/.cargo/bin:$PATH' >> $HOME/.bashrc  # If using bash.
+echo 'export PATH=$HOME/.cargo/bin:$PATH' >> $HOME/.zshrc   # If using zsh.
+```
 
 ## Usage examples
 
