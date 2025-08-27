@@ -29,6 +29,10 @@ struct Args {
     #[arg(long, short)]
     model: Option<String>,
 
+    /// Specify system prompt.
+    #[arg(long, short)]
+    system: Option<String>,
+
     /// Print the model's response in JSON form.
     #[arg(long, short = 'j')]
     output_json: bool,
@@ -57,6 +61,7 @@ fn process() -> Result<(), String> {
     let config = Config::load()?;
 
     let prompt = config.resolve_prompt(
+        args.system.as_deref(),
         args.question.as_deref(),
         args.model.as_deref(),
     )?;

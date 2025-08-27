@@ -8,6 +8,9 @@ use crate::server::Server;
 pub struct Config {
     pub server: Server,
 
+    #[serde(rename = "default-system")]
+    pub default_system: Option<String>,
+
     #[serde(rename = "default-prompt")]
     pub default_prompt: Option<String>,
 
@@ -45,6 +48,7 @@ impl Config {
 
     pub fn resolve_prompt(
         &self,
+        system: Option<&str>,
         question: Option<&str>,
         model: Option<&str>,
     ) -> Result<Prompt, String> {
@@ -56,6 +60,7 @@ impl Config {
             if x.is_empty() {
                 Err("prompt is empty".to_string())
             } else {
+                let system = system.or(self.default_system.as_deref());
                 let model = model
                     .or(self.default_model.as_deref())
                     .ok_or_else(|| {
@@ -64,6 +69,7 @@ impl Config {
 
                 Ok(Prompt {
                     label: String::new(),
+                    system: system.map(str::to_string),
                     question: x.to_string(),
                     model: Some(model.to_string()),
                 })
@@ -95,6 +101,12 @@ impl Config {
                 }
             };
 
+            // Use the system prompt and model the user has given us
+            // instead of the one pre-specified for the prompt.
+            prompt.system = system
+                .map(str::to_string)
+                .or_else(|| prompt.system.clone())
+                .or_else(|| self.default_system.clone());
             prompt.model = model
                 .map(str::to_string)
                 .or_else(|| prompt.model.clone())
@@ -139,11 +151,13 @@ mod tests {
             Prompt {
                 label: "foo".to_string(),
                 model: Some("foo".to_string()),
+                system: None,
                 question: "foo bar baz".to_string(),
             },
             Prompt {
                 label: "bar".to_string(),
                 model: Some("bar".to_string()),
+                system: None,
                 question: "bar baz foo".to_string(),
             },
         ]
@@ -156,6 +170,7 @@ mod tests {
                 port: 5000,
                 api_key: "".to_string(),
             },
+            default_system: None,
             default_prompt: None,
             default_model: None,
             prompt: make_prompts(),
@@ -182,6 +197,7 @@ mod tests {
         let ok_custom_m = || {
             Ok(Prompt {
                 label: "".to_string(),
+                system: None,
                 model: Some("m".to_string()),
                 question: "...".to_string(),
             })
@@ -189,6 +205,7 @@ mod tests {
         let ok_custom_um = || {
             Ok(Prompt {
                 label: "".to_string(),
+                system: None,
                 model: Some("um".to_string()),
                 question: "...".to_string(),
             })
@@ -273,7 +290,7 @@ mod tests {
             config.default_prompt = defp.map(|x| x.to_string());
             config.default_model = defm.map(|x| x.to_string());
 
-            assert_eq!(config.resolve_prompt(*q, *m), *expected);
+            assert_eq!(config.resolve_prompt(None, *q, *m), *expected);
         }
     }
 }
