@@ -65,7 +65,7 @@ impl Config {
                 Ok(Prompt {
                     label: String::new(),
                     question: x.to_string(),
-                    model: model.to_string(),
+                    model: Some(model.to_string()),
                 })
             }
         } else {
@@ -95,11 +95,10 @@ impl Config {
                 }
             };
 
-            if let Some(x) = model {
-                // Use the model the user has given us instead of the
-                // one pre-specified for the prompt.
-                prompt.model = x.to_string();
-            }
+            prompt.model = model
+                .map(str::to_string)
+                .or_else(|| prompt.model.clone())
+                .or_else(|| self.default_model.clone());
 
             Ok(prompt)
         }
@@ -139,12 +138,12 @@ mod tests {
         vec![
             Prompt {
                 label: "foo".to_string(),
-                model: "foo".to_string(),
+                model: Some("foo".to_string()),
                 question: "foo bar baz".to_string(),
             },
             Prompt {
                 label: "bar".to_string(),
-                model: "bar".to_string(),
+                model: Some("bar".to_string()),
                 question: "bar baz foo".to_string(),
             },
         ]
@@ -176,21 +175,21 @@ mod tests {
         let ok_foo = || Ok(make_prompts().into_iter().next().unwrap());
         let ok_foo_um = || {
             Ok(Prompt {
-                model: "um".to_string(),
+                model: Some("um".to_string()),
                 ..make_prompts().into_iter().next().unwrap()
             })
         };
         let ok_custom_m = || {
             Ok(Prompt {
                 label: "".to_string(),
-                model: "m".to_string(),
+                model: Some("m".to_string()),
                 question: "...".to_string(),
             })
         };
         let ok_custom_um = || {
             Ok(Prompt {
                 label: "".to_string(),
-                model: "um".to_string(),
+                model: Some("um".to_string()),
                 question: "...".to_string(),
             })
         };

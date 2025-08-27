@@ -4,7 +4,7 @@ use serde::Deserialize;
 pub struct Prompt {
     pub label: String,
     pub question: String,
-    pub model: String,
+    pub model: Option<String>,
 }
 
 impl Prompt {

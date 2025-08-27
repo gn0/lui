@@ -61,7 +61,11 @@ impl Server {
         });
 
         let request = Request {
-            model: prompt.model.to_string(),
+            model: prompt
+                .model
+                .as_deref()
+                .ok_or_else(|| "no model specified".to_string())?
+                .to_string(),
             messages,
             stream,
         };
