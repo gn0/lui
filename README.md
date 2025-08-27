@@ -1,4 +1,6 @@
-# lui
+<h1 align="center">
+  <img src="https://raw.githubusercontent.com/gn0/lui/main/logo/logo_300x127.png" alt="Lui's logo, a beaver with four logs of wood" />
+</h1>
 
 Lui is an LLM UI for the command line, using the API of [open-webui](https://github.com/open-webui/open-webui).
 
