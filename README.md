@@ -85,7 +85,7 @@ You can also call it with `git review` by adding this to your `~/.gitconfig`:
     review = "!sh -c 'if [ $(git diff --staged $* | wc -l) -eq 0 ]; then echo No staged changes to review.; else git diff --staged -U10 $* | lui @pr -v; fi' --"
 ```
 
-If the diff exceeds the maximum prompt token count (see [Caveat](#Caveat)], then you can shrink the diff context from 10 lines to, say, 5 lines, by running `git review -U5`.
+If the diff exceeds the maximum prompt token count (see [Caveat](#Caveat)), then you can shrink the diff context from 10 lines to, say, 5 lines, by running `git review -U5`.
 
 ### Ask ad hoc questions
 
