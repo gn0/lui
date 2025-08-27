@@ -1,8 +1,10 @@
+use clap::ArgAction;
 use clap::Parser;
 use std::io::Write;
 
 mod config;
 mod context;
+mod logger;
 mod prompt;
 mod server;
 
@@ -45,9 +47,9 @@ struct Args {
     #[arg(long, short = 'S')]
     no_stream: bool,
 
-    /// Print usage data to stderr.
-    #[arg(long, short)]
-    verbose: bool,
+    /// Set log level (-v for info, -vv for debug, -vvv for trace).
+    #[arg(long, short, action = ArgAction::Count)]
+    verbose: u8,
 
     /// Either plain text or '@' + prompt label to use a prompt from the
     /// configuration.  If no question is given, the default prompt will
@@ -57,6 +59,20 @@ struct Args {
 
 fn process() -> Result<(), String> {
     let args = Args::parse();
+
+    let max_level = match args.verbose {
+        0 => log::Level::Error,
+        1 => log::Level::Info,
+        2 => log::Level::Debug,
+        3 => log::Level::Trace,
+        _ => {
+            return Err(
+                "too many occurrences of --verbose/-v".to_string()
+            )
+        }
+    };
+
+    logger::init(max_level).map_err(|x| x.to_string())?;
 
     let config = Config::load()?;
 
@@ -71,6 +87,28 @@ fn process() -> Result<(), String> {
     if args.rag.is_some() {
         // TODO
         panic!("RAG support is not yet implemented");
+    }
+
+    if log::log_enabled!(log::Level::Info) {
+        log::info!(
+            "querying model {:?}",
+            prompt.model.as_deref().unwrap_or("")
+        );
+
+        if let Some(ref x) = prompt.system {
+            log::info!("using system prompt {x:?}");
+        }
+
+        match (context.anonymous.is_some(), context.named.len()) {
+            (true, 0) => log::info!("sending stdin as context"),
+            (true, x) => {
+                log::info!("sending stdin and {x} files as context")
+            }
+            (false, x) if x > 0 => {
+                log::info!("sending {x} files as context")
+            }
+            _ => (),
+        }
     }
 
     let response =
@@ -129,7 +167,7 @@ fn process() -> Result<(), String> {
         if !skip_this_output {
             if args.output_json {
                 let output_json = serde_json::to_string(&output)
-                    .map_err(|x| format!("{x}"))?;
+                    .map_err(|x| x.to_string())?;
 
                 println!("{output_json}");
             } else {
@@ -150,13 +188,13 @@ fn process() -> Result<(), String> {
 
         prev_message = Some(output.message);
 
-        if args.verbose {
+        if log::log_enabled!(log::Level::Info) {
             if let Some(x) = output.prompt_tokens {
-                eprintln!("note: prompt tokens: {x}");
+                log::info!("prompt tokens: {x}");
             }
 
             if let Some(x) = output.approximate_total {
-                eprintln!("note: total time: {x}");
+                log::info!("total time: {x}");
             }
         }
     }

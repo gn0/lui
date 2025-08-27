@@ -216,7 +216,7 @@ impl<'a> Iterator for TokenIter<'a> {
             }
 
             let Some(json) = line.strip_prefix("data: ") else {
-                eprintln!("error: server sent bad line: {line:?}");
+                log::error!("server sent bad line: {line:?}");
                 return None;
             };
 
@@ -227,7 +227,7 @@ impl<'a> Iterator for TokenIter<'a> {
             let Ok(value): Result<Value, _> =
                 serde_json::from_str(json)
             else {
-                eprintln!("error: server sent bad JSON: {json:?}");
+                log::error!("server sent bad JSON: {json:?}");
                 return None;
             };
 

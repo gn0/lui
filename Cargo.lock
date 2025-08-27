@@ -352,6 +352,7 @@ dependencies = [
  "clap",
  "glob",
  "http",
+ "log",
  "serde",
  "serde_json",
  "toml",

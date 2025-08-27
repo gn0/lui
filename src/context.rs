@@ -11,8 +11,8 @@ pub type Content = String;
 /// model.
 #[derive(Debug)]
 pub struct Context {
-    anonymous: Option<String>,
-    named: Vec<(Label, Content)>,
+    pub anonymous: Option<String>,
+    pub named: Vec<(Label, Content)>,
 }
 
 impl Context {
