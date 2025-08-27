@@ -150,7 +150,7 @@ mod tests {
         ]
     }
 
-    fn make_config() -> Config {
+    fn make_config_without_defaults() -> Config {
         Config {
             server: Server {
                 host: "".to_string(),
@@ -164,147 +164,117 @@ mod tests {
     }
 
     #[test]
-    fn resolve_prompt_falls_back_on_default_prompt() {
-        let mut config = make_config();
-
-        assert_eq!(
-            config.resolve_prompt(None, None),
-            Err("no default prompt specified".to_string())
-        );
-
-        config.default_prompt = Some("foo".to_string());
-
-        assert_eq!(
-            config.resolve_prompt(None, None),
-            Ok(config.prompt[0].clone())
-        );
-    }
-
-    #[test]
-    fn resolve_prompt_TODO_NAME_THIS_TODO_model_without_question() {
-        // XXX Does this case make any sense?  A model without a
-        // question?  This is a total bonkers scenario and probably no
-        // prompt should be returned by Config::resolve_prompt.
-        // However, I am not sure because it is 2:13am and I am tired.
-        let config = make_config();
-
-        assert_eq!(
-            config.resolve_prompt(None, Some("foo")),
-            Ok(config.prompt[0].clone())
-        );
-
-        assert_eq!(
-            config.resolve_prompt(None, Some("bar")),
-            Ok(config.prompt[1].clone())
-        );
-
-        assert_eq!(
-            config.resolve_prompt(None, Some("asdf")),
-            Err("prompt 'asdf' not found".to_string())
-        );
-    }
-
-    #[test]
-    fn resolve_prompt_returns_correct_prompt_if_question_is_label() {
-        let config = make_config();
-
-        assert_eq!(
-            config.resolve_prompt(Some("@foo"), None),
-            Ok(config.prompt[0].clone())
-        );
-
-        assert_eq!(
-            config.resolve_prompt(Some("@bar"), None),
-            Ok(config.prompt[1].clone())
-        );
-
-        assert_eq!(
-            config.resolve_prompt(Some("@asdf"), None),
-            Err("prompt 'asdf' not found".to_string())
-        );
-    }
-
-    #[test]
-    fn resolve_prompt_falls_back_on_default_model_if_question_is_text()
-    {
-        let question = "foo bar baz";
-        let mut config = make_config();
-
-        assert_eq!(
-            config.resolve_prompt(Some(question), None),
-            Err("no default model specified".to_string())
-        );
-
-        config.default_model = Some("foo".to_string());
-
-        assert_eq!(
-            config.resolve_prompt(Some(question), None),
+    fn resolve_prompt_handles_all_scenarios() {
+        let err_nodefp =
+            || Err("no default prompt specified".to_string());
+        let err_nodefm =
+            || Err("no default model specified".to_string());
+        let err_emptyp = || Err("prompt is empty".to_string());
+        let err_badp = || Err("prompt 'asdf' not found".to_string());
+        let err_baddefp =
+            || Err("default prompt 'asdf' not found".to_string());
+        let ok_foo = || Ok(make_prompts().into_iter().next().unwrap());
+        let ok_foo_um = || {
             Ok(Prompt {
-                label: String::new(),
-                model: "foo".to_string(),
-                question: question.to_string(),
+                model: "um".to_string(),
+                ..make_prompts().into_iter().next().unwrap()
             })
-        );
-    }
+        };
+        let ok_custom_m = || {
+            Ok(Prompt {
+                label: "".to_string(),
+                model: "m".to_string(),
+                question: "...".to_string(),
+            })
+        };
+        let ok_custom_um = || {
+            Ok(Prompt {
+                label: "".to_string(),
+                model: "um".to_string(),
+                question: "...".to_string(),
+            })
+        };
 
-    #[test]
-    fn resolve_prompt_uses_the_given_model_if_question_is_label() {
-        let model = "lorem-ipsum";
-        let config = make_config();
-        let mut expected_1 = config.prompt[0].clone();
-        let mut expected_2 = config.prompt[1].clone();
+        #[rustfmt::skip]
+        let table = &[
+            // Fields:
+            //
+            // 1. expected output
+            // 2. default prompt
+            // 3. default model
+            // 4. user-specified question
+            // 5. user-specified model
+            //
+            (err_nodefp(),   None, None, None, None),
+            (err_nodefp(),   None, None, None, Some("um")),
+            (err_emptyp(),   None, None, Some(""), None),
+            (err_emptyp(),   None, None, Some(""), Some("um")),
+            (ok_foo(),       None, None, Some("@foo"), None),
+            (ok_foo_um(),    None, None, Some("@foo"), Some("um")),
+            (err_badp(),     None, None, Some("@asdf"), None),
+            (err_badp(),     None, None, Some("@asdf"), Some("um")),
+            (err_nodefm(),   None, None, Some("..."), None),
+            (ok_custom_um(), None, None, Some("..."), Some("um")),
+            (err_nodefp(),   None, Some("m"), None, None),
+            (err_nodefp(),   None, Some("m"), None, Some("um")),
+            (err_emptyp(),   None, Some("m"), Some(""), None),
+            (err_emptyp(),   None, Some("m"), Some(""), Some("um")),
+            (ok_foo(),       None, Some("m"), Some("@foo"), None),
+            (ok_foo_um(),    None, Some("m"), Some("@foo"), Some("um")),
+            (err_badp(),     None, Some("m"), Some("@asdf"), None),
+            (err_badp(),     None, Some("m"), Some("@asdf"), Some("um")),
+            (ok_custom_m(),  None, Some("m"), Some("..."), None),
+            (ok_custom_um(), None, Some("m"), Some("..."), Some("um")),
+            (ok_foo(),       Some("foo"), None, None, None),
+            (ok_foo_um(),    Some("foo"), None, None, Some("um")),
+            (err_emptyp(),   Some("foo"), None, Some(""), None),
+            (err_emptyp(),   Some("foo"), None, Some(""), Some("um")),
+            (ok_foo(),       Some("foo"), None, Some("@foo"), None),
+            (ok_foo_um(),    Some("foo"), None, Some("@foo"), Some("um")),
+            (err_badp(),     Some("foo"), None, Some("@asdf"), None),
+            (err_badp(),     Some("foo"), None, Some("@asdf"), Some("um")),
+            (err_nodefm(),   Some("foo"), None, Some("..."), None),
+            (ok_custom_um(), Some("foo"), None, Some("..."), Some("um")),
+            (ok_foo(),       Some("foo"), Some("m"), None, None),
+            (ok_foo_um(),    Some("foo"), Some("m"), None, Some("um")),
+            (err_emptyp(),   Some("foo"), Some("m"), Some(""), None),
+            (err_emptyp(),   Some("foo"), Some("m"), Some(""), Some("um")),
+            (ok_foo(),       Some("foo"), Some("m"), Some("@foo"), None),
+            (ok_foo_um(),    Some("foo"), Some("m"), Some("@foo"), Some("um")),
+            (err_badp(),     Some("foo"), Some("m"), Some("@asdf"), None),
+            (err_badp(),     Some("foo"), Some("m"), Some("@asdf"), Some("um")),
+            (ok_custom_m(),  Some("foo"), Some("m"), Some("..."), None),
+            (ok_custom_um(), Some("foo"), Some("m"), Some("..."), Some("um")),
+            (err_baddefp(),  Some("asdf"), None, None, None),
+            (err_baddefp(),  Some("asdf"), None, None, Some("um")),
+            (err_emptyp(),   Some("asdf"), None, Some(""), None),
+            (err_emptyp(),   Some("asdf"), None, Some(""), Some("um")),
+            (ok_foo(),       Some("asdf"), None, Some("@foo"), None),
+            (ok_foo_um(),    Some("asdf"), None, Some("@foo"), Some("um")),
+            (err_badp(),     Some("asdf"), None, Some("@asdf"), None),
+            (err_badp(),     Some("asdf"), None, Some("@asdf"), Some("um")),
+            (err_nodefm(),   Some("asdf"), None, Some("..."), None),
+            (ok_custom_um(), Some("asdf"), None, Some("..."), Some("um")),
+            (err_baddefp(),  Some("asdf"), Some("m"), None, None),
+            (err_baddefp(),  Some("asdf"), Some("m"), None, Some("um")),
+            (err_emptyp(),   Some("asdf"), Some("m"), Some(""), None),
+            (err_emptyp(),   Some("asdf"), Some("m"), Some(""), Some("um")),
+            (ok_foo(),       Some("asdf"), Some("m"), Some("@foo"), None),
+            (ok_foo_um(),    Some("asdf"), Some("m"), Some("@foo"), Some("um")),
+            (err_badp(),     Some("asdf"), Some("m"), Some("@asdf"), None),
+            (err_badp(),     Some("asdf"), Some("m"), Some("@asdf"), Some("um")),
+            (ok_custom_m(),  Some("asdf"), Some("m"), Some("..."), None),
+            (ok_custom_um(), Some("asdf"), Some("m"), Some("..."), Some("um")),
+        ];
 
-        expected_1.model = model.to_string();
-        expected_2.model = model.to_string();
+        for (expected, defp, defm, q, m) in table.iter() {
+            dbg!((expected, defp, defm, q, m));
 
-        assert_eq!(
-            config.resolve_prompt(Some("@foo"), Some(model)),
-            Ok(expected_1)
-        );
+            let mut config = make_config_without_defaults();
+            config.default_prompt = defp.map(|x| x.to_string());
+            config.default_model = defm.map(|x| x.to_string());
 
-        assert_eq!(
-            config.resolve_prompt(Some("@bar"), Some(model)),
-            Ok(expected_2)
-        );
-
-        assert_eq!(
-            config.resolve_prompt(Some("@asdf"), Some(model)),
-            Err("prompt 'asdf' not found".to_string())
-        );
-    }
-
-    #[test]
-    fn resolve_prompt_uses_the_given_model_if_question_is_text() {
-        let question = "foo bar baz";
-        let mut config = make_config();
-
-        // The assertions should hold whether or not a default model is
-        // specified.  They are tested in a loop to make it clear that
-        // it's the exact same assertions that are made.
-        loop {
-            assert_eq!(
-                config.resolve_prompt(Some(question), Some("foo")),
-                Ok(Prompt {
-                    label: String::new(),
-                    model: "foo".to_string(),
-                    question: question.to_string(),
-                })
-            );
-
-            assert_eq!(
-                config.resolve_prompt(Some(question), Some("bar")),
-                Ok(Prompt {
-                    label: String::new(),
-                    model: "bar".to_string(),
-                    question: question.to_string(),
-                })
-            );
-
-            if config.default_model.is_some() {
-                break;
-            }
-
-            config.default_model = Some("foo".to_string());
+            assert_eq!(config.resolve_prompt(*q, *m), *expected);
         }
     }
 }
