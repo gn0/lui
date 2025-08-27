@@ -6,6 +6,24 @@ Lui is an LLM UI for the command line, using the API of [open-webui](https://git
 
 Compiling lui requires Rust 1.88.0 or newer because it uses [let chains](https://blog.rust-lang.org/2025/06/26/Rust-1.88.0/#let-chains).
 
+## Contents
+
+1. [Features](#features)
+2. [Caveat](#caveat)
+3. [Usage examples](#usage-examples)
+   - [Basic configuration](#basic-configuration)
+   - [Fill in docstring gaps](#fill-in-docstring-gaps)
+   - [Review staged changes](#review-staged-changes)
+   - [Ask ad hoc questions](#ask-ad-hoc-questions)
+4. [Detailed usage](#detailed-usage)
+   - [No context](#no-context)
+   - [Anonymous context](#anonymous-context)
+   - [Multiple named files as context](#multiple-named-files-as-context)
+   - [Glob pattern to define context](#glob-pattern-to-define-context)
+   - [Pre-specified prompt](#pre-specified-prompt)
+   - [Default prompt, etc.](#default-prompt-etc)
+5. [License](#license)
+
 ## Features
 
 + [X] Configuration in `$XDG_CONFIG_HOME/lui/config.toml`.
