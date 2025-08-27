@@ -1,6 +1,6 @@
 # lui
 
-LLMs for the command line via open-webui.
+Lui is an LLM UI for the command line, using the API of [open-webui](https://github.com/open-webui/open-webui).
 
 Compiling lui requires Rust 1.88.0 or newer because it uses [let chains](https://blog.rust-lang.org/2025/06/26/Rust-1.88.0/#let-chains).
 
@@ -14,38 +14,169 @@ Compiling lui requires Rust 1.88.0 or newer because it uses [let chains](https:/
   - [X] Text as context.
   - [ ] PDFs and Word documents as context.
   - [ ] Image files as context.
++ [X] Set a system prompt.
 + [X] Stream the tokens from open-webui.
++ [X] Remove `<think></think>` blocks from the response by default.
++ [ ] Automatically check if the context exceeds the maximum prompt token count.
++ [ ] List available models by querying open-webui.
++ [ ] List available prompts.
+
+## Caveat
+
+Models have a limited number of prompt tokens.
+If a file that you include in the context is too large, then the model will silently ignore it even though lui does send it in the request.
+
+One way to assess whether this is happening is by calling lui with the `-v` or (`--verbose`) command-line option, in which case it will print the prompt token count returned by open-webui to stderr.
 
 ## Usage examples
 
-### Question without context
+### Fill in docstring gaps
+
+It is good practice for docstrings to list the error conditions for functions that return `Result`:
+
+```rust
+/// Formats a doodad as a widget.
+///
+/// # Errors
+///
+/// This function returns an error if
+///
+/// TODO
+pub fn as_widget(doodad: &Doodad) -> Result<Doodad> {
+    // ...
+}
+```
+
+You can ask a model to fill in the gaps marked by `TODO`:
+
+```sh
+lui -i 'src/*.rs' -- \
+    "Some of the docstrings have TODO where the error conditions \
+     should be described. Can you fill in the missing error conditions \
+     based on the code base?"
+```
+
+### Review staged changes
+
+This is [Bill Mill's prompt](https://notes.billmill.org/blog/2025/07/An_AI_tool_I_find_useful.html) for rudimentary code review:
+
+```toml
+# Add this to $HOME/.config/lui/config.toml
+
+[[prompt]]
+label = "pr"
+question = "Please review this PR as if you were a senior engineer."
+model = "qwen3:32b"
+```
+
+As Bill also advises, take the result with a large grain of salt.
+Most of the response may be useless, some of it may be useful.
+
+```sh
+git diff --staged -U10 | lui @pr
+```
+
+You can also call it with `git review` by adding this to your `~/.gitconfig`:
+
+```
+[alias]
+    review = "!sh -c 'if [ $(git diff --staged $* | wc -l) -eq 0 ]; then echo No staged changes to review.; else git diff --staged -U10 $* | lui @pr -v; fi' --"
+```
+
+If the diff exceeds the maximum prompt token count (see [Caveat](#Caveat)], then you can shrink the diff context from 10 lines to, say, 5 lines, by running `git review -U5`.
+
+### Ask ad hoc questions
+
+This is [kqr's system prompt](https://entropicthoughts.com/q) for asking quick questions on the command line:
+
+```toml
+default-system = """\
+    Answer in as few words as possible. \
+    Use a brief style with short replies.\
+    """
+```
+
+```sh
+lui 'how do i confine a docker container with apparmor?'
+```
+
+Response:
+
+> Use `--security-opt apparmor=<profile-name>` when running the container. Create a custom profile in `/etc/apparmor.d/` or use Docker's default. Ensure AppArmor is enabled.
+
+If you want the model to ignore the default system prompt, you can run lui with `-s ''`.
+
+```sh
+lui -s '' 'how do i confine a docker container with apparmor?'
+```
+
+Of course, the system prompt works with contexts, too:
+
+```sh
+lui -i 'src/*.rs' -- \
+    'if this code base was a fresh herb, what herb would it be? why?'
+```
+
+Response:
+
+> Rosemary. Resilient, evergreen, and subtly complex – much like well-maintained code.
+
+## Detailed usage
+
+### No context
 
 ```sh
 lui 'Why did the chicken cross the road?'
 ```
 
-### Question with anonymous context
+### Anonymous context
+
+You can send an anonymous context to lui via a pipe:
 
 ```sh
-lui < make.log \
-    'This build fails. How can I fix `foobar_baz`?'
+cat make.log \
+    | lui 'This build fails. How can I fix `foobar_baz`?'
 ```
 
-### Question with multiple named files as context
+### Multiple named files as context
 
 ```sh
 lui -i foo.c bar.c baz.c make.log -- \
     'This build fails (see make.log). How can I fix `foobar_baz`?'
 ```
 
-### Question with a directory and a named file as context
+Named files can also be combined with an anonymous context:
+
+```sh
+cat make.log \
+    | lui -i foo.c bar.c baz.c -- \
+        'This build fails. How can I fix `foobar_baz`?'
+```
+
+You can also paste an anonymous context on stdin by using `-` as a pattern:
+
+```sh
+lui -i - -- 'This build fails. How can I fix `foobar_baz`?'
+```
+
+The `--` is necessary because `-i` accepts an arbitrary number of patterns.
+Without the `--`, lui would would interpret the question as a glob pattern.
+You can avoid having to use it by specifying the prompt first:
+
+```sh
+lui 'This build fails. How can I fix `foobar_baz`?' -i -
+```
+
+### Glob pattern to define context
 
 ```sh
 lui -i 'src/**/*.[ch]' make.log -- \
     'This build fails (see make.log). How can I fix `foobar_baz`?'
 ```
 
-### Use a pre-specified prompt
+### Pre-specified prompt
+
+You can save prompts that you use often by adding them to `$HOME/.config/lui/config.toml`:
 
 ```toml
 [[prompt]]
@@ -54,20 +185,46 @@ question = "Why does this build fail?"
 model = "gemma3:27b"
 ```
 
+Reference a pre-specified prompt by prepending `@` to its label:
+
 ```sh
-lui -i 'src/**/*.[ch]' make.log -- @build
+lui -i 'src/**/*.c' make.log -- @build
 ```
 
-### Make a pre-specified prompt the default
+### Default prompt, etc.
+
+You can set a default prompt by label.
+This prompt will be used when you run lui without specifying a question.
+
+A default model and a default system prompt can also be set.
+These will be applied to every prompt that doesn't explicitly set a model or a system prompt.
+For example:
 
 ```toml
-default-prompt = "memo"
+default-prompt = "tldr"
+default-model = "gemma3:27b"
+default-system = "Answer only the prompt and nothing else. Be brief."
 
 [[prompt]]
-label = "memo"
-question = "What am I seeing here? Please summarize as if you were writing a memo."
-model = "gemma3:27b"
+label = "tldr"
+question = "What is the tl;dr for the contents of the context?"
+#
+# Implied:
+#
+#   model = "gemma3:27b"
+#   system = "Answer only the prompt and nothing else. Be brief."
+#
 ```
+
+```sh
+lynx -dump -nolist \
+    https://alexkondov.com/i-know-when-youre-vibe-coding/ \
+    | lui
+```
+
+Response:
+
+> Don't prioritize speed over code quality and maintainability, even when using LLMs. Care about consistency and long-term effects, not just a working solution.
 
 ## License
 
