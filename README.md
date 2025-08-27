@@ -44,7 +44,7 @@ It is good practice for docstrings to list the error conditions for functions th
 /// This function returns an error if
 ///
 /// TODO
-pub fn as_widget(doodad: &Doodad) -> Result<Doodad> {
+pub fn as_widget(doodad: &Doodad) -> Result<Widget> {
     // ...
 }
 ```
@@ -71,7 +71,7 @@ question = "Please review this PR as if you were a senior engineer."
 model = "qwen3:32b"
 ```
 
-As Bill also advises, take the result with a large grain of salt.
+As Bill also advises, take the result with more than a grain of salt.
 Most of the response may be useless, some of it may be useful.
 
 ```sh
