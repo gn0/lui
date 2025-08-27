@@ -53,20 +53,25 @@ impl Config {
         {
             // Question is text.
 
-            let model =
-                model.or(self.default_model.as_deref()).ok_or_else(
-                    || "no default model specified".to_string(),
-                )?;
+            if x.is_empty() {
+                Err("prompt is empty".to_string())
+            } else {
+                let model = model
+                    .or(self.default_model.as_deref())
+                    .ok_or_else(|| {
+                        "no default model specified".to_string()
+                    })?;
 
-            Ok(Prompt {
-                label: String::new(),
-                question: x.to_string(),
-                model: model.to_string(),
-            })
+                Ok(Prompt {
+                    label: String::new(),
+                    question: x.to_string(),
+                    model: model.to_string(),
+                })
+            }
         } else {
             let mut prompt = match question {
                 None => {
-                    // Question is empty.
+                    // Question is missing.
 
                     let label = self
                         .default_prompt
