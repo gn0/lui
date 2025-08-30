@@ -57,23 +57,7 @@ struct Args {
     question: Option<String>,
 }
 
-fn process() -> Result<(), String> {
-    let args = Args::parse();
-
-    let max_level = match args.verbose {
-        0 => log::Level::Error,
-        1 => log::Level::Info,
-        2 => log::Level::Debug,
-        3 => log::Level::Trace,
-        _ => {
-            return Err(
-                "too many occurrences of --verbose/-v".to_string()
-            )
-        }
-    };
-
-    logger::init(max_level).map_err(|x| x.to_string())?;
-
+fn process(args: &Args) -> Result<(), String> {
     let config = Config::load()?;
 
     let prompt = config.resolve_prompt(
@@ -203,10 +187,28 @@ fn process() -> Result<(), String> {
 }
 
 fn main() {
-    match process() {
+    let args = Args::parse();
+
+    let max_level = match args.verbose {
+        0 => log::Level::Error,
+        1 => log::Level::Info,
+        2 => log::Level::Debug,
+        3 => log::Level::Trace,
+        _ => {
+            eprintln!("error: too many occurrences of --verbose/-v");
+            std::process::exit(1);
+        }
+    };
+
+    logger::init(max_level).unwrap_or_else(|x| {
+        eprintln!("error: {x}");
+        std::process::exit(1)
+    });
+
+    match process(&args) {
         Ok(_) => std::process::exit(0),
         Err(x) => {
-            eprintln!("error: {x}");
+            log::error!("{x}");
             std::process::exit(1);
         }
     }
