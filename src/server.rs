@@ -55,10 +55,7 @@ impl Server {
             })
             .collect();
 
-        messages.push(Message {
-            role: "user".to_string(),
-            content: prompt.as_message(),
-        });
+        messages.extend(prompt.as_messages());
 
         let request = Request {
             model: prompt
@@ -141,9 +138,9 @@ struct Request {
 }
 
 #[derive(Debug, Serialize)]
-struct Message {
-    role: String,
-    content: String,
+pub struct Message {
+    pub role: String,
+    pub content: String,
 }
 
 pub enum OutputReader<'a> {

@@ -1,5 +1,7 @@
 use serde::Deserialize;
 
+use crate::server::Message;
+
 #[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct Prompt {
     pub label: String,
@@ -9,18 +11,27 @@ pub struct Prompt {
 }
 
 impl Prompt {
-    /// Converts the prompt into a Markdown representation that can be
-    /// sent to the model.
-    pub fn as_message(&self) -> String {
-        let mut message = "# Prompt\n\n".to_string();
+    /// Converts the prompt into messages that [`Server::send`] can send
+    /// to the model.
+    ///
+    /// If a system prompt is present in `self`, the corresponding
+    /// message role is set to `system`.  The user prompt has role
+    /// `user`.
+    pub fn as_messages(&self) -> Vec<Message> {
+        let mut result = Vec::new();
 
         if let Some(ref x) = self.system {
-            message.push_str(x);
-            message.push_str("\n\n");
+            result.push(Message {
+                role: "system".to_string(),
+                content: x.to_string(),
+            });
         }
 
-        message.push_str(&self.question);
+        result.push(Message {
+            role: "user".to_string(),
+            content: format!("#Prompt\n\n{}", self.question),
+        });
 
-        message
+        result
     }
 }
