@@ -2,7 +2,7 @@
   <img src="https://raw.githubusercontent.com/gn0/lui/main/logo/logo_300x127.png" alt="Lui's logo, a beaver with four logs of wood" />
 </h1>
 
-Lui is an LLM UI for the command line, using the API of [open-webui](https://github.com/open-webui/open-webui).
+Lui is an LLM UI for the command line, using the API of [Open WebUI](https://github.com/open-webui/open-webui).
 
 Compiling lui requires Rust 1.88.0 or newer because it uses [let chains](https://blog.rust-lang.org/2025/06/26/Rust-1.88.0/#let-chains).
 
@@ -28,7 +28,7 @@ Compiling lui requires Rust 1.88.0 or newer because it uses [let chains](https:/
 ## Features
 
 + [X] Configuration in `$XDG_CONFIG_HOME/lui/config.toml`.
-  - [X] Host, port, and API key for open-webui.
+  - [X] Host, port, and API key for Open WebUI.
   - [X] Prompts specified along with models.
 + [X] Pose question without context.
 + [X] Pose question with context.
@@ -36,10 +36,10 @@ Compiling lui requires Rust 1.88.0 or newer because it uses [let chains](https:/
   - [ ] PDFs and Word documents as context.
   - [ ] Image files as context.
 + [X] Set a system prompt.
-+ [X] Stream the tokens from open-webui.
++ [X] Stream the tokens from Open WebUI.
 + [X] Remove `<think></think>` blocks from the response by default.
 + [ ] Automatically check if the context exceeds the maximum prompt token count.
-+ [ ] List available models by querying open-webui.
++ [ ] List available models by querying Open WebUI.
 + [ ] List available prompts.
 
 ## Caveat
@@ -47,7 +47,7 @@ Compiling lui requires Rust 1.88.0 or newer because it uses [let chains](https:/
 Models have a limited number of prompt tokens.
 If a file that you include in the context is too large, then the model will silently ignore it even though lui does send it in the request.
 
-One way to assess whether this is happening is by calling lui with the `-v` or (`--verbose`) command-line option, in which case it will print the prompt token count returned by open-webui to stderr.
+One way to assess whether this is happening is by calling lui with the `-v` or (`--verbose`) command-line option, in which case it will print the prompt token count returned by Open WebUI to stderr.
 
 ## Installation
 
@@ -74,21 +74,21 @@ echo 'export PATH=$HOME/.cargo/bin:$PATH' >> $HOME/.zshrc   # If using zsh.
 
 ### Basic configuration
 
-Lui needs access to an open-webui API endpoint, and you probably also want to set a default model.
+Lui needs access to an Open WebUI API endpoint, and you probably also want to set a default model.
 Add the following to `$HOME/.config/lui/config.toml`:
 
 ```toml
-# Assuming open-webui has gemma3:27b available:
+# Assuming Open WebUI has gemma3:27b available:
 default-model = "gemma3:27b"
 
 [server]
-# Assuming open-webui is listening at 127.0.0.1:3000:
+# Assuming Open WebUI is listening at 127.0.0.1:3000:
 host = "127.0.0.1"
 port = 3000
 api-key = "..."
 ```
 
-You can get an API key from open-webui by
+You can get an API key from Open WebUI by
 
 1. clicking on your name in the bottom-left corner and navigating to "Settings,"
 2. clicking on "Admin Panel" in the bottom-left corner of the Settings window,
