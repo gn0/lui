@@ -23,6 +23,7 @@ Compiling lui requires Rust 1.88.0 or newer because it uses [let chains](https:/
    - [Glob pattern to define context](#glob-pattern-to-define-context)
    - [Pre-specified prompt](#pre-specified-prompt)
    - [Default prompt, etc.](#default-prompt-etc)
+   - [Choosing the right context window](#choosing-the-right-context-window)
 6. [License](#license)
 
 ## Features
@@ -48,6 +49,8 @@ Models have a limited number of prompt tokens.
 If a file that you include in the context is too large, then the model will silently ignore it even though lui does send it in the request.
 
 One way to assess whether this is happening is by calling lui with the `-v` or (`--verbose`) command-line option, in which case it will print the prompt token count returned by Open WebUI to stderr.
+
+(Also see [Choosing the right context window](#choosing-the-right-context-window) below.)
 
 ## Installation
 
@@ -291,6 +294,22 @@ lynx -dump -nolist \
 Response:
 
 > Don't prioritize speed over code quality and maintainability, even when using LLMs. Care about consistency and long-term effects, not just a working solution.
+
+### Choosing the right context window
+
+Each model is limited by a maximum number of tokens that it can process at once.
+This is called the context window.
+Even though models support relatively large context windows, larger windows consume more GPU memory.
+So unless you run small models or send prompts with small contexts, you will probably benefit from calibrating the context window for each model to match your available VRAM.
+
+The context window is set by Open WebUI when querying Ollama, via the parameter called `num_ctx`.
+You can modify the value that it sets by going to `Settings` > `Models`, and clicking on the edit button for the model that you want to calibrate.
+Click on "Show" near "Advanced Params," and scroll down to `num_ctx`.
+
+The value for this parameter should be chosen such that the model stays fully in VRAM.
+Verify this by monitoring CPU and GPU usage (with tools like [`htop`](https://github.com/htop-dev/htop) and [`nvtop`](https://github.com/Syllo/nvtop)) while the model is processing your prompt.
+If you choose a context window size larger than what your VRAM can handle, Ollama will fall back on CPU processing, resulting in GPU underutilization.
+Your goal is to find the largest context window that still allows the model to run entirely in VRAM, enabling full GPU utilization.
 
 ## License
 
