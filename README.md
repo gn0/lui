@@ -182,13 +182,26 @@ lui -s '' 'how do i confine a docker container with apparmor?'
 Of course, the system prompt works with contexts, too:
 
 ```sh
-lui -i 'src/*.rs' -- \
-    'if this code base was a fresh herb, what herb would it be? why?'
+lui -i 'src/*.hs' '*.cabal' \
+    -m phi4-reasoning:14b \
+    "Under RelNewlyAdded, the fields of the new entry are ignored. \
+     Instead, this program only shows ChangeNothing in the output. I \
+     want the program to instead list all the fields of the new entry, \
+     e.g., ChangePatAdded (if applicable for a particular entry). \
+     Where do I need to modify the source code to make this change?"
 ```
 
 Response:
 
-> Rosemary. Resilient, evergreen, and subtly complex – much like well-maintained code.
+> The fix is in Diff.hs—specifically, the changeAll function’s pattern matching. Currently it only handles RelSameAs, RelSplitInto, and RelMergedAs (leaving RelNewlyAdded with an empty changes list). To have newly added entries report their fields, update changeAll so that it calls changeEntries for RelNewlyAdded (and similarly for RelRemoved) instead of returning []. For example, change its last clause to something like:
+>
+>      f x@(RelNewlyAdded b) = (x, changeEntries [] [b])
+>      f x@(RelRemoved a)    = (x, changeEntries [a] [])
+>      f _                    = (x, [])
+>
+> This way, the new entry’s fields will be processed and reported as changes.
+
+That's not perfect Haskell code, but still a useful starting point if you haven't touched the code base in a while.
 
 ## Detailed usage
 
