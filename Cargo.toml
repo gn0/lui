@@ -1,7 +1,17 @@
 [package]
 name = "lui"
 version = "0.2.1"
+authors = ["Gábor Nyéki <gn@gabornyeki.com>"]
+description = """
+Lui is an LLM UI for the command line, using the API of Open WebUI.
+"""
 edition = "2024"
+license-file = "LICENSE"
+readme = "README.md"
+homepage = "https://github.com/gn0/lui"
+repository = "https://github.com/gn0/lui"
+keywords = ["tool", "utility", "llm"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 clap = { version = "4.5.*", default-features = false, features = ["std", "help", "usage", "error-context", "suggestions", "derive"] }
