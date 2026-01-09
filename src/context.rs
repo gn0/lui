@@ -113,14 +113,14 @@ impl Context {
 
         if let Some(ref content) = self.anonymous {
             result.push(format!(
-                "## Unnamed input\n\n```\n{}\n```",
+                "## Unnamed input\n\n```\n{}\n```\n",
                 content.trim_end_matches(['\r', '\n'])
             ));
         }
 
         for (label, content) in self.named.iter() {
             result.push(format!(
-                "## File `{label}`\n\n```\n{}\n```",
+                "## File `{label}`\n\n```\n{}\n```\n",
                 content.trim_end_matches(['\r', '\n'])
             ));
         }
