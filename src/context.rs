@@ -108,7 +108,7 @@ impl Context {
 
     /// Converts each file in the context into a Markdown representation
     /// that can be sent to the model.
-    pub fn as_messages(&self) -> Vec<String> {
+    pub fn as_markdown(&self) -> Vec<String> {
         let mut result = Vec::new();
 
         if let Some(ref content) = self.anonymous {

@@ -47,7 +47,7 @@ impl Server {
         );
 
         let mut messages: Vec<_> = context
-            .as_messages()
+            .as_markdown()
             .into_iter()
             .enumerate()
             .inspect(|(index, content)| {
