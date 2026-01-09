@@ -49,7 +49,14 @@ impl Server {
         let mut messages: Vec<_> = context
             .as_messages()
             .into_iter()
-            .map(|content| Message {
+            .enumerate()
+            .inspect(|(index, content)| {
+                log::debug!(
+                    "sending context {}: {content:?}",
+                    index + 1
+                )
+            })
+            .map(|(_, content)| Message {
                 role: "user".to_string(),
                 content,
             })
