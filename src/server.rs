@@ -291,15 +291,27 @@ pub fn remove_think_block(message: &str) -> Cow<'_, str> {
     if message.starts_with("<think>")
         && let Some(pos) = message.find("</think>")
     {
-        let clean = message
-            .chars()
-            .skip(pos + 8)
-            .collect::<String>()
+        let clean = message[(pos + 8)..]
             .trim_start_matches(['\r', '\n'])
             .to_string();
 
         Cow::Owned(clean)
     } else {
         Cow::Borrowed(message)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remove_think_block_correctly_handles_utf8() {
+        assert_eq!(
+            remove_think_block(
+                "<think>\nlorem ipsum 概括\n</think>\n\nfoo bar baz"
+            ),
+            "foo bar baz"
+        );
     }
 }
