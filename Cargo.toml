@@ -1,6 +1,6 @@
 [package]
 name = "lui"
-version = "0.2.2"
+version = "0.2.3"
 authors = ["Gábor Nyéki <gn@gabornyeki.com>"]
 description = """
 Lui is an LLM UI for the command line, using the API of Open WebUI.
