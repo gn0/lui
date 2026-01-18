@@ -1,5 +1,5 @@
-use clap::ArgAction;
-use clap::Parser;
+use clap::{ArgAction, Parser};
+use std::borrow::Cow;
 use std::io::Write;
 
 mod config;
@@ -10,7 +10,7 @@ mod server;
 
 use crate::config::Config;
 use crate::context::Context;
-use crate::server::remove_think_block;
+use crate::server::{Output, OutputReader, remove_think_block};
 
 /// Command-line interface to open-webui.
 #[derive(Debug, Parser)]
@@ -57,6 +57,132 @@ struct Args {
     question: Option<String>,
 }
 
+struct OutputNormalizer<T>
+where
+    T: std::io::Read,
+{
+    output_reader: OutputReader<T>,
+    ever_read: bool,
+    prev_returned_output: Option<Output>,
+    keep_think_block: bool,
+    no_stream: bool,
+    inside_think_block: bool,
+}
+
+impl<T> OutputNormalizer<T>
+where
+    T: std::io::Read,
+{
+    fn new(
+        output_reader: OutputReader<T>,
+        keep_think_block: bool,
+        no_stream: bool,
+    ) -> Self {
+        Self {
+            output_reader,
+            ever_read: false,
+            prev_returned_output: None,
+            keep_think_block,
+            no_stream,
+            inside_think_block: false,
+        }
+    }
+}
+
+impl<T> Iterator for OutputNormalizer<T>
+where
+    T: std::io::Read,
+{
+    type Item = Output;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        for mut output in self.output_reader.by_ref() {
+            log::debug!("server sent {output:?}");
+
+            let skip_this_output;
+
+            if self.no_stream {
+                // The output we've received should contain the server's
+                // complete response.
+                //
+
+                let clean = if self.keep_think_block {
+                    Cow::from(output.message)
+                } else {
+                    remove_think_block(&output.message)
+                };
+
+                // Normalize trailing whitespace.
+                //
+                output.message = format!("{}\n", clean.trim_end());
+
+                skip_this_output = false;
+            } else {
+                // The output we've received is one token in the
+                // server's response stream.
+                //
+
+                if !self.keep_think_block
+                    && !self.ever_read
+                    && output.message == "<think>"
+                {
+                    // We want to drop the <think></think> block and the
+                    // first token (this one!) is <think>.
+                    //
+                    skip_this_output = true;
+                    self.inside_think_block = true;
+                } else if !self.keep_think_block
+                    && self.inside_think_block
+                {
+                    // We want to drop the <think></think> block.  The
+                    // first token (previously) was <think> and we
+                    // haven't seen </think> before.
+                    //
+
+                    skip_this_output = true;
+
+                    if output.message == "</think>" {
+                        // Current token closes <think></think> block.
+                        //
+                        self.inside_think_block = false;
+                    }
+                } else if self.prev_returned_output.is_none() {
+                    // This is the first token that would be printed.
+                    // Normalize leading newlines.
+                    //
+
+                    output.message =
+                        output.message.trim_start().to_string();
+
+                    skip_this_output = output.message.is_empty()
+                        && output.prompt_tokens.is_none()
+                        && output.approximate_total.is_none();
+                } else {
+                    if output.message.is_empty() {
+                        // An empty message indicates the end of the
+                        // token stream.  Change the message to `\n` to
+                        // make sure that we print a closing newline.
+                        //
+                        output.message = "\n".to_string();
+                    }
+
+                    skip_this_output = false;
+                }
+            }
+
+            self.ever_read = true;
+
+            if !skip_this_output {
+                self.prev_returned_output = Some(output.clone());
+
+                return Some(output);
+            }
+        }
+
+        None
+    }
+}
+
 fn process(args: &Args) -> Result<(), String> {
     let config = Config::load()?;
 
@@ -98,79 +224,23 @@ fn process(args: &Args) -> Result<(), String> {
     let response =
         config.server.send(&prompt, &context, !args.no_stream)?;
 
-    let mut prev_message: Option<String> = None;
-    let mut prev_printed: Option<String> = None;
-    let mut inside_think_block = false;
+    let normalizer = OutputNormalizer::new(
+        response,
+        args.keep_think_block,
+        args.no_stream,
+    );
 
-    for output in response {
-        let mut output = output;
-        let skip_this_output;
+    for output in normalizer {
+        if args.output_json {
+            let output_json = serde_json::to_string(&output)
+                .map_err(|x| x.to_string())?;
 
-        if args.keep_think_block {
-            skip_this_output = false;
-        } else if !args.keep_think_block && args.no_stream {
-            // Remove <think></think> block from complete output.  Also
-            // normalize trailing newlines.
-            //
-
-            skip_this_output = false;
-
-            let clean = remove_think_block(&output.message);
-            output.message = format!("{}\n", clean.trim_end());
+            println!("{output_json}");
         } else {
-            // Remove <think></think> block from token stream.
-            //
-            if prev_message.is_none() && output.message == "<think>" {
-                // First token is <think>.
-                //
-                skip_this_output = true;
-                inside_think_block = true;
-            } else if inside_think_block {
-                // First token was <think>.
-                //
+            print!("{}", output.message);
 
-                skip_this_output = true;
-
-                if output.message == "</think>" {
-                    // Current token closes <think></think> block.
-                    //
-                    inside_think_block = false;
-                }
-            } else {
-                // Normalize leading newlines.
-                //
-                if prev_printed.is_none() {
-                    output.message =
-                        output.message.trim_start().to_string();
-                }
-
-                skip_this_output = output.message.is_empty();
-            }
+            let _ = std::io::stdout().flush();
         }
-
-        if !skip_this_output {
-            if args.output_json {
-                let output_json = serde_json::to_string(&output)
-                    .map_err(|x| x.to_string())?;
-
-                println!("{output_json}");
-            } else {
-                print!("{}", output.message);
-
-                let _ = std::io::stdout().flush();
-
-                if output.message.is_empty()
-                    && let Some(x) = prev_message
-                    && !x.ends_with('\n')
-                {
-                    println!();
-                }
-            }
-
-            prev_printed = Some(output.message.clone());
-        }
-
-        prev_message = Some(output.message);
 
         if log::log_enabled!(log::Level::Info) {
             if let Some(x) = output.prompt_tokens {
@@ -211,5 +281,183 @@ fn main() {
             log::error!("{x}");
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::server::TokenIter;
+    use std::io::BufReader;
+
+    fn new_streamed_output_reader(
+        tokens: &[&str],
+    ) -> OutputReader<&'static [u8]> {
+        let mut responses: Vec<_> = tokens
+            .iter()
+            .map(|x| {
+                format!(
+                    "{}{}{}",
+                    r#"data: {"choices":[{"delta":{"content":""#,
+                    x.replace("\n", "\\n"),
+                    r#""}}]}"#
+                )
+            })
+            .collect();
+
+        responses.push(
+            r#"data: {"usage":{"prompt_tokens":2,"approximate_total":"foo bar"}}"#
+                .to_string()
+        );
+
+        let buf_reader = BufReader::new(
+            format!("{}\r\n", responses.join("\r\n")).leak().as_bytes(),
+        );
+
+        OutputReader::Streamed(TokenIter::new(buf_reader))
+    }
+
+    fn new_complete_output_reader(
+        tokens: &[&str],
+    ) -> OutputReader<&'static [u8]> {
+        OutputReader::Complete(server::OutputIter::new(Output {
+            message: tokens.join("").to_string(),
+            prompt_tokens: Some(2),
+            approximate_total: Some("foo bar".to_string()),
+        }))
+    }
+
+    #[test]
+    fn output_normalizer_keeps_complete_think_block() {
+        let mut normalizer = OutputNormalizer::new(
+            new_complete_output_reader(&[
+                "<think>", "asdf", " qwerty", "</think>", "\n\n",
+                "lorem", " ipsum",
+            ]),
+            true,
+            true,
+        );
+
+        assert_eq!(
+            normalizer.next(),
+            Some(Output {
+                message: "<think>asdf qwerty</think>\n\nlorem ipsum\n"
+                    .to_string(),
+                prompt_tokens: Some(2),
+                approximate_total: Some("foo bar".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn output_normalizer_keeps_streamed_think_block() {
+        let normalizer = OutputNormalizer::new(
+            new_streamed_output_reader(&[
+                "<think>", "asdf", " qwerty", "</think>", "\\n\\n",
+                "lorem", " ipsum",
+            ]),
+            true,
+            false,
+        );
+
+        assert_eq!(
+            normalizer.collect::<Vec<_>>(),
+            &[
+                Output {
+                    message: "<think>".to_string(),
+                    prompt_tokens: None,
+                    approximate_total: None,
+                },
+                Output {
+                    message: "asdf".to_string(),
+                    prompt_tokens: None,
+                    approximate_total: None,
+                },
+                Output {
+                    message: " qwerty".to_string(),
+                    prompt_tokens: None,
+                    approximate_total: None,
+                },
+                Output {
+                    message: "</think>".to_string(),
+                    prompt_tokens: None,
+                    approximate_total: None,
+                },
+                Output {
+                    message: "\n\n".to_string(),
+                    prompt_tokens: None,
+                    approximate_total: None,
+                },
+                Output {
+                    message: "lorem".to_string(),
+                    prompt_tokens: None,
+                    approximate_total: None,
+                },
+                Output {
+                    message: " ipsum".to_string(),
+                    prompt_tokens: None,
+                    approximate_total: None,
+                },
+                Output {
+                    message: "\n".to_string(),
+                    prompt_tokens: Some(2),
+                    approximate_total: Some("foo bar".to_string()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn output_normalizer_removes_complete_think_block() {
+        let mut normalizer = OutputNormalizer::new(
+            new_complete_output_reader(&[
+                "<think>", "asdf", " qwerty", "</think>", "\n\n",
+                "lorem", " ipsum",
+            ]),
+            false,
+            true,
+        );
+
+        assert_eq!(
+            normalizer.next(),
+            Some(Output {
+                message: "lorem ipsum\n".to_string(),
+                prompt_tokens: Some(2),
+                approximate_total: Some("foo bar".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn output_normalizer_removes_streamed_think_block() {
+        let normalizer = OutputNormalizer::new(
+            new_streamed_output_reader(&[
+                "<think>", "asdf", " qwerty", "</think>", "\\n\\n",
+                "lorem", " ipsum",
+            ]),
+            false,
+            false,
+        );
+
+        assert_eq!(
+            normalizer.collect::<Vec<_>>(),
+            &[
+                Output {
+                    message: "lorem".to_string(),
+                    prompt_tokens: None,
+                    approximate_total: None,
+                },
+                Output {
+                    message: " ipsum".to_string(),
+                    prompt_tokens: None,
+                    approximate_total: None,
+                },
+                Output {
+                    message: "\n".to_string(),
+                    prompt_tokens: Some(2),
+                    approximate_total: Some("foo bar".to_string()),
+                },
+            ]
+        );
     }
 }

@@ -40,7 +40,7 @@ impl Server {
         prompt: &Prompt,
         context: &Context,
         stream: bool,
-    ) -> Result<OutputReader<'static>, String> {
+    ) -> Result<OutputReader<BodyReader<'static>>, String> {
         let uri = format!(
             "http://{}:{}/api/chat/completions",
             self.host, self.port
@@ -83,10 +83,10 @@ impl Server {
             .map_err(|x| format!("{x}"))?;
 
         if stream {
+            let body_reader = response.into_body().into_reader();
+
             Ok(OutputReader::Streamed(TokenIter {
-                reader: BufReader::new(
-                    response.into_body().into_reader(),
-                ),
+                reader: BufReader::new(body_reader),
             }))
         } else {
             let output = get_complete_output(response)?;
@@ -150,12 +150,18 @@ pub struct Message {
     pub content: String,
 }
 
-pub enum OutputReader<'a> {
+pub enum OutputReader<T>
+where
+    T: std::io::Read,
+{
     Complete(OutputIter),
-    Streamed(TokenIter<'a>),
+    Streamed(TokenIter<T>),
 }
 
-impl<'a> Iterator for OutputReader<'a> {
+impl<T> Iterator for OutputReader<T>
+where
+    T: std::io::Read,
+{
     type Item = Output;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -174,6 +180,15 @@ pub struct OutputIter {
     output: Option<Output>,
 }
 
+impl OutputIter {
+    #[allow(unused)]
+    pub fn new(output: Output) -> Self {
+        Self {
+            output: Some(output),
+        }
+    }
+}
+
 impl Iterator for OutputIter {
     type Item = Output;
 
@@ -186,11 +201,24 @@ impl Iterator for OutputIter {
     }
 }
 
-pub struct TokenIter<'a> {
-    reader: BufReader<BodyReader<'a>>,
+pub struct TokenIter<T>
+where
+    T: std::io::Read,
+{
+    reader: BufReader<T>,
 }
 
-impl<'a> Iterator for TokenIter<'a> {
+impl<T> TokenIter<T>
+where
+    T: std::io::Read,
+{
+    #[allow(unused)]
+    pub fn new(reader: BufReader<T>) -> Self {
+        Self { reader }
+    }
+}
+
+impl<T: std::io::Read> Iterator for TokenIter<T> {
     type Item = Output;
 
     /// Iterates over tokens sent by open-webui in a streamed response.
@@ -250,7 +278,7 @@ impl<'a> Iterator for TokenIter<'a> {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Output {
     pub message: String,
     pub prompt_tokens: Option<u64>,
