@@ -52,6 +52,8 @@ impl Context {
     ///   files that match the glob pattern, or
     /// - the content of one of the matched files is not valid UTF-8.
     pub fn load_named(&mut self, pattern: &str) -> Result<(), String> {
+        let mut matched_file = false;
+
         for maybe_path in
             glob(pattern).map_err(|x| format!("{pattern}: {x}"))?
         {
@@ -62,8 +64,14 @@ impl Context {
                     format!("{}: {x}", path.to_string_lossy())
                 })?;
 
+            matched_file = true;
+
             self.named
                 .push((String::from(path.to_string_lossy()), content));
+        }
+
+        if !matched_file {
+            return Err(format!("{pattern}: no files matched"));
         }
 
         Ok(())
