@@ -1,6 +1,7 @@
-use clap::{ArgAction, Parser};
+use clap::{ArgAction, ArgGroup, Parser};
 use std::borrow::Cow;
 use std::io::Write;
+use std::path::Path;
 
 mod config;
 mod context;
@@ -11,11 +12,16 @@ mod server;
 
 use crate::config::Config;
 use crate::context::Context;
-use crate::server::{Output, OutputReader, remove_think_block};
+use crate::server::{Output, OutputReader, Server, remove_think_block};
 
 /// Command-line interface to open-webui.
 #[derive(Debug, Parser)]
 #[command(version, about)]
+#[command(
+    group = ArgGroup::new("prune_mode")
+        .args(["prune", "prune_all"])
+        .multiple(true)
+)]
 struct Args {
     /// Files to feed to open-webui's RAG API for use with the prompt.
     /// (Can be glob patterns.)
@@ -47,6 +53,47 @@ struct Args {
     /// Don't stream the response, only print when complete.
     #[arg(long, short = 'S')]
     no_stream: bool,
+
+    /// Don't delete files uploaded for RAG (-r) after the query.
+    #[arg(long)]
+    keep_uploads: bool,
+
+    /// Delete RAG files this machine uploaded but never cleaned up
+    /// (e.g., after a crash), then exit.  This is a standalone
+    /// maintenance operation and cannot be combined with a prompt or
+    /// any prompting option.
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "prune_all", "question", "rag", "include", "model",
+            "system", "output_json", "keep_think_block", "no_stream",
+            "keep_uploads",
+        ]
+    )]
+    prune: bool,
+
+    /// Delete EVERY file the user can access on the server, including
+    /// persistent files and ones not uploaded by lui, then exit.
+    /// Requires --yes.  Like --prune, this is a standalone maintenance
+    /// operation and cannot be combined with a prompt.
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "question", "rag", "include", "model", "system",
+            "output_json", "keep_think_block", "no_stream",
+            "keep_uploads",
+        ]
+    )]
+    prune_all: bool,
+
+    /// Confirm the destructive --prune-all operation.
+    #[arg(long, requires = "prune_all")]
+    yes: bool,
+
+    /// With --prune or --prune-all, list the files that would be
+    /// deleted without deleting them.
+    #[arg(long, requires = "prune_mode")]
+    dry_run_prune: bool,
 
     /// Set log level (-v for info, -vv for debug, -vvv for trace).
     #[arg(long, short, action = ArgAction::Count)]
@@ -187,6 +234,16 @@ where
 fn process(args: &Args) -> Result<(), String> {
     let config = Config::load()?;
 
+    // Prune subcommands don't need a prompt or context, and would
+    // otherwise fail in resolve_prompt when no question is given.
+    if args.prune {
+        return prune(&config.server, args.dry_run_prune);
+    }
+
+    if args.prune_all {
+        return prune_all(&config.server, args.yes, args.dry_run_prune);
+    }
+
     let prompt = config.resolve_prompt(
         args.system.as_deref(),
         args.question.as_deref(),
@@ -195,10 +252,10 @@ fn process(args: &Args) -> Result<(), String> {
 
     let context = Context::load(args.include.as_deref())?;
 
-    if args.rag.is_some() {
-        // TODO
-        panic!("RAG support is not yet implemented");
-    }
+    let rag_file_ids = match args.rag.as_deref() {
+        Some(patterns) => upload_rag(&config.server, patterns)?,
+        None => Vec::new(),
+    };
 
     if log::log_enabled!(log::Level::Info) {
         log::info!(
@@ -220,12 +277,16 @@ fn process(args: &Args) -> Result<(), String> {
             }
             _ => (),
         }
+
+        if !rag_file_ids.is_empty() {
+            log::info!("referencing {} RAG files", rag_file_ids.len());
+        }
     }
 
     let response = config.server.send(
         &prompt,
         &context,
-        &[],
+        &rag_file_ids,
         !args.no_stream,
     )?;
 
@@ -258,7 +319,175 @@ fn process(args: &Args) -> Result<(), String> {
         }
     }
 
+    if !args.keep_uploads {
+        cleanup_uploads(&config.server, &rag_file_ids);
+    }
+
     Ok(())
+}
+
+/// Uploads each file matched by the RAG glob patterns and records its
+/// ID in the local journal *before* the chat request is sent, so that a
+/// crash still leaves a prunable record.
+///
+/// # Errors
+///
+/// This function returns an error if a pattern matches no files or an
+/// upload fails.  A failure to record an upload in the journal is only
+/// logged: the upload itself succeeded, so the query proceeds.
+fn upload_rag(
+    server: &Server,
+    patterns: &[String],
+) -> Result<Vec<String>, String> {
+    let paths = context::expand_rag_paths(patterns)?;
+    let dir = journal::pending_dir();
+
+    if dir.is_none() {
+        log::warn!(
+            "home directory cannot be determined; \
+             uploads will not be journaled for --prune"
+        );
+    }
+
+    log::info!("uploading {} RAG files", paths.len());
+
+    let mut ids = Vec::new();
+
+    for path in &paths {
+        log::debug!("uploading RAG file {path:?}");
+
+        let id = server.upload_file(path)?;
+
+        if let Some(ref dir) = dir
+            && let Err(x) = journal::add(dir, &id)
+        {
+            log::warn!("could not record upload {id}: {x}");
+        }
+
+        ids.push(id);
+    }
+
+    Ok(ids)
+}
+
+/// Deletes each ID from the server and, on success, drops its journal
+/// marker.  Returns the number deleted.  A delete failure is reported to
+/// stderr (so it is visible regardless of `-v`) but never fatal: the ID
+/// stays in the journal for a later `--prune`.
+fn delete_and_unjournal(
+    server: &Server,
+    dir: Option<&Path>,
+    ids: &[String],
+) -> usize {
+    let mut deleted = 0;
+
+    for id in ids {
+        match server.delete_file(id) {
+            Ok(()) => {
+                if let Some(dir) = dir {
+                    let _ = journal::remove(dir, id);
+                }
+                deleted += 1;
+            }
+            Err(x) => {
+                log::warn!("could not delete file {id}: {x}")
+            }
+        }
+    }
+
+    deleted
+}
+
+/// Deletes the files uploaded for this query and clears their journal
+/// records.
+fn cleanup_uploads(server: &Server, ids: &[String]) {
+    let dir = journal::pending_dir();
+
+    delete_and_unjournal(server, dir.as_deref(), ids);
+}
+
+/// Deletes RAG files this machine uploaded but never cleaned up, using
+/// the local journal as the source of truth (so it never touches a file
+/// lui didn't create).
+///
+/// # Errors
+///
+/// This function returns an error if the home directory or the journal
+/// cannot be read.  Individual delete failures are only warned about.
+fn prune(server: &Server, dry_run: bool) -> Result<(), String> {
+    let dir = journal::pending_dir().ok_or_else(|| {
+        "home directory cannot be determined".to_string()
+    })?;
+
+    let ids = journal::load(&dir)?;
+
+    if dry_run {
+        for id in &ids {
+            println!("{id}");
+        }
+        log::info!("{} files would be pruned", ids.len());
+        return Ok(());
+    }
+
+    let deleted = delete_and_unjournal(server, Some(&dir), &ids);
+
+    log::info!("pruned {deleted} files");
+
+    Ok(())
+}
+
+/// Deletes every file the user can access on the server.  Destructive
+/// and irreversible, so it refuses to run without `--yes` unless this is
+/// a dry run.
+///
+/// # Errors
+///
+/// This function returns an error if `--yes` was not given, or if
+/// listing the files fails.  Individual delete failures are only warned
+/// about.
+fn prune_all(
+    server: &Server,
+    yes: bool,
+    dry_run: bool,
+) -> Result<(), String> {
+    if !dry_run {
+        // Check confirmation before any network call.
+        prune_all_confirmed(yes)?;
+    }
+
+    let ids = server.list_files()?;
+
+    if dry_run {
+        for id in &ids {
+            println!("{id}");
+        }
+        log::info!("{} files would be deleted", ids.len());
+        return Ok(());
+    }
+
+    let dir = journal::pending_dir();
+    let deleted = delete_and_unjournal(server, dir.as_deref(), &ids);
+
+    log::info!("deleted {deleted} of {} files", ids.len());
+
+    Ok(())
+}
+
+/// Gate for the destructive `--prune-all` operation.
+///
+/// # Errors
+///
+/// Returns an error unless `yes` is true.
+fn prune_all_confirmed(yes: bool) -> Result<(), String> {
+    if yes {
+        Ok(())
+    } else {
+        Err("--prune-all deletes every file you can access on the \
+             server, including persistent files and ones not uploaded \
+             by lui. Re-run with --yes to confirm, or --dry-run-prune \
+             to preview."
+            .to_string())
+    }
 }
 
 fn main() {
@@ -294,6 +523,48 @@ mod tests {
     use super::*;
     use crate::server::TokenIter;
     use std::io::BufReader;
+
+    #[test]
+    fn prune_all_requires_confirmation() {
+        // Without --yes the guard fails, and it does so before any
+        // network call (it takes no server argument).
+        assert!(prune_all_confirmed(false).is_err());
+        assert!(prune_all_confirmed(true).is_ok());
+    }
+
+    #[test]
+    fn prune_is_a_standalone_operation() {
+        use clap::Parser;
+
+        let ok = |a: &[&str]| Args::try_parse_from(a).is_ok();
+        let err = |a: &[&str]| Args::try_parse_from(a).is_err();
+
+        // Pruning is allowed on its own (plus --yes/-v).
+        assert!(ok(&["lui", "--prune"]));
+        assert!(ok(&["lui", "--prune", "-v"]));
+        assert!(ok(&["lui", "--prune-all", "--yes"]));
+
+        // Pruning cannot be mixed with a prompt or prompting options.
+        assert!(err(&["lui", "--prune", "hello"]));
+        assert!(err(&["lui", "--prune", "-r", "x.pdf"]));
+        assert!(err(&["lui", "--prune", "-i", "x.txt"]));
+        assert!(err(&["lui", "--prune", "-m", "gemma"]));
+        assert!(err(&["lui", "--prune", "--keep-uploads"]));
+        assert!(err(&["lui", "--prune-all", "--yes", "hello"]));
+
+        // The two prune modes are mutually exclusive, and --yes is
+        // only allowed with --prune-all.
+        assert!(err(&["lui", "--prune", "--prune-all"]));
+        assert!(err(&["lui", "--yes"]));
+
+        // --dry-run-prune is only allowed with a prune mode.
+        assert!(err(&["lui", "--dry-run-prune"]));
+        assert!(ok(&["lui", "--prune", "--dry-run-prune"]));
+        assert!(ok(&["lui", "--prune-all", "--dry-run-prune"]));
+
+        // A normal prompt with prompting options is still fine.
+        assert!(ok(&["lui", "hello", "-r", "x.pdf", "-m", "gemma"]));
+    }
 
     fn new_streamed_output_reader(
         tokens: &[&str],
