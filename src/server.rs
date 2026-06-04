@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::borrow::Cow;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
+use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 use ureq::BodyReader;
 
 use crate::context::Context;
@@ -39,6 +41,7 @@ impl Server {
         &self,
         prompt: &Prompt,
         context: &Context,
+        file_ids: &[String],
         stream: bool,
     ) -> Result<OutputReader<BodyReader<'static>>, String> {
         let uri = self.url("/api/chat/completions");
@@ -69,6 +72,13 @@ impl Server {
                 .to_string(),
             messages,
             stream,
+            files: file_ids
+                .iter()
+                .map(|id| FileRef {
+                    kind: "file".to_string(),
+                    id: id.clone(),
+                })
+                .collect(),
         };
 
         let response = ureq::post(&uri)
@@ -100,6 +110,243 @@ impl Server {
     fn bearer(&self) -> String {
         format!("Bearer {}", self.api_key)
     }
+
+    /// Uploads `path` to open-webui's RAG file store and returns the ID
+    /// the server assigned to it.
+    ///
+    /// The request blocks until the file has been indexed
+    /// (`process_in_background=false`), so the returned ID can be
+    /// referenced in a chat request right away without polling.
+    ///
+    /// ureq 3.1 has no multipart support, so the `multipart/form-data`
+    /// body is assembled by hand.
+    ///
+    /// # Errors
+    ///
+    /// This method returns an error if the file cannot be read, the HTTP
+    /// request fails, or the response is not JSON containing a string,
+    /// safe `id`.
+    pub fn upload_file(&self, path: &Path) -> Result<String, String> {
+        let uri =
+            self.url("/api/v1/files/?process_in_background=false");
+
+        // The filename is interpolated into a Content-Disposition
+        // header, so quotes and control characters (which a Unix
+        // filename may legally contain) must be removed to avoid
+        // producing a malformed or injectable multipart body.
+        let filename = sanitize_filename(path);
+        let content_type = content_type_for(path);
+
+        let boundary = multipart_boundary();
+        let mut body = Vec::new();
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\n\
+                 Content-Disposition: form-data; \
+                 name=\"file\"; filename=\"{filename}\"\r\n\
+                 Content-Type: {content_type}\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        // Append the file's bytes straight into `body` so the file is
+        // held in memory only once.
+        std::fs::File::open(path)
+            .and_then(|mut file| file.read_to_end(&mut body))
+            .map_err(|x| format!("{}: {x}", path.to_string_lossy()))?;
+        body.extend_from_slice(
+            format!("\r\n--{boundary}--\r\n").as_bytes(),
+        );
+
+        let response = ureq::post(&uri)
+            .header("Authorization", &self.bearer())
+            .header(
+                "Content-Type",
+                &format!("multipart/form-data; boundary={boundary}"),
+            )
+            .send(body)
+            .map_err(|x| format!("{}: {x}", path.to_string_lossy()))?;
+
+        let value: Value = response
+            .into_body()
+            .read_json()
+            .map_err(|x| format!("{x}"))?;
+
+        let id = value["id"].as_str().ok_or_else(|| {
+            format!(
+                "{}: upload response has no file id",
+                path.to_string_lossy()
+            )
+        })?;
+
+        // The ID is later used as a path component (in the journal) and
+        // a URL segment (in delete_file), so reject anything that isn't
+        // a plain token before trusting it.
+        if !is_safe_id(id) {
+            return Err(format!(
+                "{}: server returned an unsafe file id {id:?}",
+                path.to_string_lossy()
+            ));
+        }
+
+        Ok(id.to_string())
+    }
+
+    /// Deletes the file with the given ID from open-webui.
+    ///
+    /// A `404` response is treated as success: the file is already
+    /// gone, which is the desired end state.
+    ///
+    /// # Errors
+    ///
+    /// This method returns an error if `id` is not a safe token or if
+    /// the HTTP request fails with any status other than `404`.
+    pub fn delete_file(&self, id: &str) -> Result<(), String> {
+        if !is_safe_id(id) {
+            return Err(format!("unsafe file id {id:?}"));
+        }
+
+        let uri = self.url(&format!("/api/v1/files/{id}"));
+
+        match ureq::delete(&uri)
+            .header("Authorization", &self.bearer())
+            .call()
+        {
+            Ok(_) => Ok(()),
+            Err(ureq::Error::StatusCode(404)) => Ok(()),
+            Err(x) => Err(format!("{id}: {x}")),
+        }
+    }
+
+    /// Lists the IDs of every file the authenticated user can access on
+    /// the server.  Entries whose ID is missing or unsafe to use as a
+    /// path/URL segment are skipped with a warning rather than aborting
+    /// the whole listing.
+    ///
+    /// # Errors
+    ///
+    /// This method returns an error if the HTTP request fails or the
+    /// response is not a JSON array.
+    pub fn list_files(&self) -> Result<Vec<String>, String> {
+        let value: Value = ureq::get(&self.url("/api/v1/files/"))
+            .header("Authorization", &self.bearer())
+            .call()
+            .map_err(|x| format!("{x}"))?
+            .into_body()
+            .read_json()
+            .map_err(|x| format!("{x}"))?;
+
+        let array = value
+            .as_array()
+            .ok_or_else(|| "malformed file list".to_string())?;
+
+        let mut ids = Vec::new();
+
+        for file in array {
+            match file["id"].as_str() {
+                Some(id) if is_safe_id(id) => ids.push(id.to_string()),
+                Some(id) => {
+                    log::warn!("skipping file with unsafe id {id:?}")
+                }
+                None => log::warn!("skipping file with no id"),
+            }
+        }
+
+        Ok(ids)
+    }
+}
+
+/// Returns true if `id` is safe to use both as a single file path
+/// component and as a URL path segment.
+///
+/// The function enforces the following conditions:
+///
+/// - Only ASCII alphanumerics and `.`, `-`, `_` are permitted, with the
+///   goal of covering the UUIDs Open WebUI ought to return while
+///   preventing path separators (`/`) or URL-reserved characters (`?`,
+///   `#`, `%`, etc.) from slipping through.
+/// - The whole-string values `.` and `..` are rejected.
+/// - The ID cannot be longer than 255 bytes, to prevent issues on file
+///   systems that don't support longer filenames.
+fn is_safe_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 255
+        && id != "."
+        && id != ".."
+        && id.chars().all(|c| {
+            c.is_ascii_alphanumeric()
+                || c == '.'
+                || c == '-'
+                || c == '_'
+        })
+}
+
+/// Derives the filename open-webui sees, with any character that would
+/// break the Content-Disposition header (quotes, backslashes, CR/LF and
+/// other control characters) removed.
+fn sanitize_filename(path: &Path) -> String {
+    let raw = path
+        .file_name()
+        .map(|x| x.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".to_string());
+
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| *c != '"' && *c != '\\' && !c.is_control())
+        .collect();
+
+    if cleaned.is_empty() {
+        "file".to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// Guesses a MIME type from the file extension so that open-webui can
+/// pick the right document loader.  Falls back to a generic binary type
+/// for unknown extensions.
+fn content_type_for(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|x| x.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("csv") => "text/csv",
+        Some("doc") => "application/msword",
+        Some("docx") => {
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        }
+        Some("epub") => "application/epub+zip",
+        Some("html") | Some("htm") => "text/html",
+        Some("json") => "application/json",
+        Some("md") | Some("markdown") => "text/markdown",
+        Some("pdf") => "application/pdf",
+        Some("ppt") => "application/vnd.ms-powerpoint",
+        Some("pptx") => {
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        }
+        Some("rst") => "text/x-rst",
+        Some("tsv") => "text/tab-separated-values",
+        Some("txt") | Some("text") | Some("log") => "text/plain",
+        Some("xml") => "application/xml",
+        Some("xls") => "application/vnd.ms-excel",
+        Some("xlsx") => {
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        }
+        _ => "application/octet-stream",
+    }
+}
+
+/// Builds a multipart boundary token unlikely to collide with file
+/// contents.  Instead of pulling in a random number generator, use the
+/// PID + current time in nanoseconds (unique enough in practice).
+fn multipart_boundary() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+
+    format!("----luiBoundary{}{}", std::process::id(), nanos)
 }
 
 /// Reads the complete output from open-webui for a non-streamed
@@ -146,6 +393,20 @@ struct Request {
     model: String,
     messages: Vec<Message>,
     stream: bool,
+
+    /// RAG file references.  Skipped entirely when empty so that
+    /// non-RAG requests serialize exactly as they did before.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    files: Vec<FileRef>,
+}
+
+/// A reference to a file that open-webui has already ingested, sent in
+/// the chat request so the server retrieves from it.
+#[derive(Debug, Serialize)]
+struct FileRef {
+    #[serde(rename = "type")]
+    kind: String,
+    id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -316,6 +577,117 @@ mod tests {
                 "<think>\nlorem ipsum 概括\n</think>\n\nfoo bar baz"
             ),
             "foo bar baz"
+        );
+    }
+
+    #[test]
+    fn request_omits_files_when_empty() {
+        let request = Request {
+            model: "m".to_string(),
+            messages: Vec::new(),
+            stream: false,
+            files: Vec::new(),
+        };
+
+        let json = serde_json::to_string(&request).unwrap();
+
+        assert!(
+            !json.contains("files"),
+            "empty files should not be serialized: {json}"
+        );
+    }
+
+    #[test]
+    fn request_serializes_files_with_type_and_id() {
+        let request = Request {
+            model: "m".to_string(),
+            messages: Vec::new(),
+            stream: false,
+            files: vec![FileRef {
+                kind: "file".to_string(),
+                id: "abc123".to_string(),
+            }],
+        };
+
+        let json = serde_json::to_string(&request).unwrap();
+
+        assert!(
+            json.contains(r#""files":[{"type":"file","id":"abc123"}]"#),
+            "unexpected files serialization: {json}"
+        );
+    }
+
+    #[test]
+    fn is_safe_id_rejects_path_and_url_tricks() {
+        // A real open-webui ID (UUID with hyphens) is accepted.
+        assert!(is_safe_id("b9733e9c-0714-4425-8915-d0361bf66dfc"));
+        assert!(is_safe_id("file-0a1b2c3d-uuid"));
+
+        for bad in [
+            "",
+            ".",
+            "..",
+            "../etc/passwd",
+            "a/b",
+            "a\\b",
+            "with space",
+            "per%cent",
+            "query?x=1",
+            "frag#ment",
+            "amp&ersand",
+            "tab\tted",
+            "new\nline",
+            &"x".repeat(256),
+        ] {
+            assert!(!is_safe_id(bad), "{bad:?} should be unsafe");
+        }
+    }
+
+    #[test]
+    fn sanitize_filename_strips_header_breakers() {
+        assert_eq!(
+            sanitize_filename(Path::new("ev\"il\r\n.pdf")),
+            "evil.pdf"
+        );
+        assert_eq!(
+            sanitize_filename(Path::new("/tmp/report.pdf")),
+            "report.pdf"
+        );
+        // A name made entirely of stripped characters falls back.
+        assert_eq!(sanitize_filename(Path::new("\"\"")), "file");
+    }
+
+    #[test]
+    fn content_type_for_maps_common_extensions() {
+        assert_eq!(
+            content_type_for(Path::new("a.pdf")),
+            "application/pdf"
+        );
+        // Case-insensitive on the extension.
+        assert_eq!(
+            content_type_for(Path::new("A.PDF")),
+            "application/pdf"
+        );
+        assert_eq!(
+            content_type_for(Path::new("sheet.xlsx")),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        );
+        assert_eq!(
+            content_type_for(Path::new("deck.pptx")),
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        );
+        assert_eq!(
+            content_type_for(Path::new("book.epub")),
+            "application/epub+zip"
+        );
+        // Extensionless filename falls back to a generic binary type.
+        assert_eq!(
+            content_type_for(Path::new("notes")),
+            "application/octet-stream"
+        );
+        assert_eq!(
+            content_type_for(Path::new("archive.tar.gz")),
+            "application/octet-stream"
         );
     }
 }

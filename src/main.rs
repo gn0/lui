@@ -221,8 +221,12 @@ fn process(args: &Args) -> Result<(), String> {
         }
     }
 
-    let response =
-        config.server.send(&prompt, &context, !args.no_stream)?;
+    let response = config.server.send(
+        &prompt,
+        &context,
+        &[],
+        !args.no_stream,
+    )?;
 
     let normalizer = OutputNormalizer::new(
         response,
