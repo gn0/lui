@@ -29,7 +29,9 @@ struct Args {
     rag: Option<Vec<String>>,
 
     /// Files to include in the prompt sent to the model.  (Can be glob
-    /// patterns, or '-' for stdin.)
+    /// patterns, or '-' for stdin.)  Image files (PNG/JPEG/GIF/WebP)
+    /// are detected by content and sent to vision-capable models.
+    /// Documents (PDF/Word/...) should use -r/--rag instead.
     #[arg(long, short, num_args = 1..)]
     include: Option<Vec<String>>,
 
@@ -280,6 +282,10 @@ fn process(args: &Args) -> Result<(), String> {
 
         if !rag_file_ids.is_empty() {
             log::info!("referencing {} RAG files", rag_file_ids.len());
+        }
+
+        if !context.images.is_empty() {
+            log::info!("sending {} images", context.images.len());
         }
     }
 
