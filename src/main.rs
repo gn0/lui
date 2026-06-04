@@ -4,6 +4,7 @@ use std::io::Write;
 
 mod config;
 mod context;
+mod journal;
 mod logger;
 mod prompt;
 mod server;
