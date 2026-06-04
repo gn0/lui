@@ -395,6 +395,24 @@ fn assemble_messages(
 
     messages.extend(prompt.as_messages());
 
+    if !context.images.is_empty()
+        && let Some(last) = messages.last_mut()
+    {
+        let text = match &last.content {
+            MessageContent::Text(s) => s.clone(),
+            MessageContent::Parts(_) => String::new(),
+        };
+
+        let mut parts = vec![ContentPart::Text { text }];
+        for (_label, url) in &context.images {
+            parts.push(ContentPart::ImageUrl {
+                image_url: ImageUrl { url: url.clone() },
+            });
+        }
+
+        last.content = MessageContent::Parts(parts);
+    }
+
     messages
 }
 
@@ -784,6 +802,105 @@ mod tests {
         assert!(matches!(
             messages.last().unwrap().content,
             MessageContent::Text(_)
+        ));
+    }
+
+    #[test]
+    fn assemble_messages_attaches_images_to_last_message() {
+        let mut context = Context::new();
+        context.images.push((
+            "pic.png".to_string(),
+            "data:image/png;base64,AAA".to_string(),
+        ));
+
+        let messages = assemble_messages(&context, &test_prompt());
+
+        match &messages.last().unwrap().content {
+            MessageContent::Parts(parts) => {
+                assert_eq!(parts.len(), 2);
+                // The original prompt text must be preserved verbatim.
+                match &parts[0] {
+                    ContentPart::Text { text } => {
+                        assert_eq!(text, "#Prompt\n\nq")
+                    }
+                    other => {
+                        panic!("expected text part, got {other:?}")
+                    }
+                }
+                match &parts[1] {
+                    ContentPart::ImageUrl { image_url } => assert_eq!(
+                        image_url.url,
+                        "data:image/png;base64,AAA"
+                    ),
+                    other => {
+                        panic!("expected image part, got {other:?}")
+                    }
+                }
+            }
+            other => panic!("expected parts, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn assemble_messages_handles_multiple_images() {
+        let mut context = Context::new();
+        context.images.push((
+            "a.png".to_string(),
+            "data:image/png;base64,A".to_string(),
+        ));
+        context.images.push((
+            "b.png".to_string(),
+            "data:image/png;base64,B".to_string(),
+        ));
+
+        let messages = assemble_messages(&context, &test_prompt());
+
+        match &messages.last().unwrap().content {
+            MessageContent::Parts(parts) => {
+                // One text part plus one part per image.
+                assert_eq!(parts.len(), 3);
+                assert!(matches!(parts[0], ContentPart::Text { .. }));
+                assert!(matches!(
+                    parts[1],
+                    ContentPart::ImageUrl { .. }
+                ));
+                assert!(matches!(
+                    parts[2],
+                    ContentPart::ImageUrl { .. }
+                ));
+            }
+            other => panic!("expected parts, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn assemble_messages_attaches_image_to_user_not_system_or_context()
+    {
+        let mut context = Context::new();
+        context.named.push(("a.txt".to_string(), "ctx".to_string()));
+        context.images.push((
+            "pic.png".to_string(),
+            "data:image/png;base64,AAA".to_string(),
+        ));
+
+        let prompt = Prompt {
+            label: String::new(),
+            system: Some("be brief".to_string()),
+            question: "q".to_string(),
+            model: Some("m".to_string()),
+        };
+
+        let messages = assemble_messages(&context, &prompt);
+
+        // [context-text user, system, prompt user]: only the last (the
+        // prompt message) carries the image.  The rest stay text.
+        assert_eq!(messages.len(), 3);
+        assert!(matches!(messages[0].content, MessageContent::Text(_)));
+        assert_eq!(messages[1].role, "system");
+        assert!(matches!(messages[1].content, MessageContent::Text(_)));
+        assert!(matches!(
+            messages.last().unwrap().content,
+            MessageContent::Parts(_)
         ));
     }
 }
