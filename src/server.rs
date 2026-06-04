@@ -46,31 +46,13 @@ impl Server {
     ) -> Result<OutputReader<BodyReader<'static>>, String> {
         let uri = self.url("/api/chat/completions");
 
-        let mut messages: Vec<_> = context
-            .as_markdown()
-            .into_iter()
-            .enumerate()
-            .inspect(|(index, content)| {
-                log::debug!(
-                    "sending context {}: {content:?}",
-                    index + 1
-                )
-            })
-            .map(|(_, content)| Message {
-                role: "user".to_string(),
-                content,
-            })
-            .collect();
-
-        messages.extend(prompt.as_messages());
-
         let request = Request {
             model: prompt
                 .model
                 .as_deref()
                 .ok_or_else(|| "no model specified".to_string())?
                 .to_string(),
-            messages,
+            messages: assemble_messages(context, prompt),
             stream,
             files: file_ids
                 .iter()
@@ -388,6 +370,34 @@ fn get_complete_output(
     })
 }
 
+/// Builds the message list sent to the model: one `user` message per
+/// text context piece, followed by the prompt's system/user messages.
+///
+/// If the context carries images, they are attached as `image_url`
+/// parts to the prompt's user message (the last message), turning its
+/// content from a plain string into a parts array.
+fn assemble_messages(
+    context: &Context,
+    prompt: &Prompt,
+) -> Vec<Message> {
+    let mut messages: Vec<Message> = context
+        .as_markdown()
+        .into_iter()
+        .enumerate()
+        .inspect(|(index, content)| {
+            log::debug!("sending context {}: {content:?}", index + 1)
+        })
+        .map(|(_, content)| Message {
+            role: "user".to_string(),
+            content: MessageContent::Text(content),
+        })
+        .collect();
+
+    messages.extend(prompt.as_messages());
+
+    messages
+}
+
 #[derive(Debug, Serialize)]
 struct Request {
     model: String,
@@ -412,7 +422,33 @@ struct FileRef {
 #[derive(Debug, Serialize)]
 pub struct Message {
     pub role: String,
-    pub content: String,
+    pub content: MessageContent,
+}
+
+/// A message body: either a plain string (the common case) or an array
+/// of typed parts (used when images accompany the text).
+///
+/// `#[serde(untagged)]` makes the `Text` variant serialize as a bare
+/// JSON string.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum MessageContent {
+    Text(String),
+    Parts(Vec<ContentPart>),
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type")]
+pub enum ContentPart {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "image_url")]
+    ImageUrl { image_url: ImageUrl },
+}
+
+#[derive(Debug, Serialize)]
+pub struct ImageUrl {
+    pub url: String,
 }
 
 pub enum OutputReader<T>
@@ -689,5 +725,65 @@ mod tests {
             content_type_for(Path::new("archive.tar.gz")),
             "application/octet-stream"
         );
+    }
+
+    #[test]
+    fn message_text_content_serializes_as_string() {
+        let message = Message {
+            role: "user".to_string(),
+            content: MessageContent::Text("foo".to_string()),
+        };
+
+        assert_eq!(
+            serde_json::to_string(&message).unwrap(),
+            r#"{"role":"user","content":"foo"}"#
+        );
+    }
+
+    #[test]
+    fn message_parts_content_serializes_as_array() {
+        let message = Message {
+            role: "user".to_string(),
+            content: MessageContent::Parts(vec![
+                ContentPart::Text {
+                    text: "foo".to_string(),
+                },
+                ContentPart::ImageUrl {
+                    image_url: ImageUrl {
+                        url: "data:image/png;base64,AAA".to_string(),
+                    },
+                },
+            ]),
+        };
+
+        let json = serde_json::to_string(&message).unwrap();
+
+        assert!(
+            json.contains(
+                r#""content":[{"type":"text","text":"foo"},{"type":"image_url","image_url":{"url":"data:image/png;base64,AAA"}}]"#
+            ),
+            "unexpected parts serialization: {json}"
+        );
+    }
+
+    fn test_prompt() -> Prompt {
+        Prompt {
+            label: String::new(),
+            system: None,
+            question: "foo".to_string(),
+            model: Some("bar".to_string()),
+        }
+    }
+
+    #[test]
+    fn assemble_messages_keeps_text_when_no_images() {
+        let context = Context::new();
+
+        let messages = assemble_messages(&context, &test_prompt());
+
+        assert!(matches!(
+            messages.last().unwrap().content,
+            MessageContent::Text(_)
+        ));
     }
 }

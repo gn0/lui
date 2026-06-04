@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::server::Message;
+use crate::server::{Message, MessageContent};
 
 #[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct Prompt {
@@ -23,13 +23,16 @@ impl Prompt {
         if let Some(ref x) = self.system {
             result.push(Message {
                 role: "system".to_string(),
-                content: x.to_string(),
+                content: MessageContent::Text(x.to_string()),
             });
         }
 
         result.push(Message {
             role: "user".to_string(),
-            content: format!("#Prompt\n\n{}", self.question),
+            content: MessageContent::Text(format!(
+                "#Prompt\n\n{}",
+                self.question
+            )),
         });
 
         result
