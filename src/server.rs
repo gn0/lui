@@ -41,10 +41,7 @@ impl Server {
         context: &Context,
         stream: bool,
     ) -> Result<OutputReader<BodyReader<'static>>, String> {
-        let uri = format!(
-            "http://{}:{}/api/chat/completions",
-            self.host, self.port
-        );
+        let uri = self.url("/api/chat/completions");
 
         let mut messages: Vec<_> = context
             .as_markdown()
@@ -75,10 +72,7 @@ impl Server {
         };
 
         let response = ureq::post(&uri)
-            .header(
-                "Authorization",
-                &format!("Bearer {}", self.api_key),
-            )
+            .header("Authorization", &self.bearer())
             .send_json(&request)
             .map_err(|x| format!("{x}"))?;
 
@@ -95,6 +89,16 @@ impl Server {
                 output: Some(output),
             }))
         }
+    }
+
+    /// Builds a full request URL from a path beginning with `/`.
+    fn url(&self, path: &str) -> String {
+        format!("http://{}:{}{}", self.host, self.port, path)
+    }
+
+    /// Builds the `Authorization` header value.
+    fn bearer(&self) -> String {
+        format!("Bearer {}", self.api_key)
     }
 }
 
