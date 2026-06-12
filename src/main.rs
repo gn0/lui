@@ -12,7 +12,10 @@ mod server;
 
 use crate::config::Config;
 use crate::context::Context;
-use crate::server::{Output, OutputReader, Server, remove_think_block};
+use crate::server::{
+    Message, Output, OutputReader, Server, parse_message,
+    remove_think_block,
+};
 
 /// Command-line interface to open-webui.
 #[derive(Debug, Parser)]
@@ -28,9 +31,9 @@ struct Args {
     #[arg(long, short, num_args = 1..)]
     rag: Option<Vec<String>>,
 
-    /// Files to include in the prompt sent to the model.  (Can be glob
-    /// patterns, or '-' for stdin.)  Image files (PNG/JPEG/GIF/WebP)
-    /// are detected by content and sent to vision-capable models.
+    /// Files to include in the prompt sent to the model. (Can be glob
+    /// patterns, or '-' for stdin.) Image files (PNG/JPEG/GIF/WebP) are
+    /// detected by content and sent to vision-capable models.
     /// Documents (PDF/Word/...) should use -r/--rag instead.
     #[arg(long, short, num_args = 1..)]
     include: Option<Vec<String>>,
@@ -39,6 +42,15 @@ struct Args {
     /// different one.
     #[arg(long, short)]
     model: Option<String>,
+
+    /// Specify conversation history.
+    #[arg(
+        long,
+        short = 'H',
+        num_args = 1..,
+        value_parser = parse_message,
+    )]
+    history: Option<Vec<Message>>,
 
     /// Specify system prompt.
     #[arg(long, short)]
@@ -61,28 +73,28 @@ struct Args {
     keep_uploads: bool,
 
     /// Delete RAG files this machine uploaded but never cleaned up
-    /// (e.g., after a crash), then exit.  This is a standalone
+    /// (e.g., after a crash), then exit. This is a standalone
     /// maintenance operation and cannot be combined with a prompt or
     /// any prompting option.
     #[arg(
         long,
         conflicts_with_all = [
-            "prune_all", "question", "rag", "include", "model",
-            "system", "output_json", "keep_think_block", "no_stream",
-            "keep_uploads",
+            "prune_all", "question", "rag", "include", "history",
+            "model", "system", "output_json", "keep_think_block",
+            "no_stream", "keep_uploads",
         ]
     )]
     prune: bool,
 
     /// Delete EVERY file the user can access on the server, including
     /// persistent files and ones not uploaded by lui, then exit.
-    /// Requires --yes.  Like --prune, this is a standalone maintenance
+    /// Requires --yes. Like --prune, this is a standalone maintenance
     /// operation and cannot be combined with a prompt.
     #[arg(
         long,
         conflicts_with_all = [
-            "question", "rag", "include", "model", "system",
-            "output_json", "keep_think_block", "no_stream",
+            "question", "rag", "include", "history", "model",
+            "system", "output_json", "keep_think_block", "no_stream",
             "keep_uploads",
         ]
     )]
@@ -102,8 +114,8 @@ struct Args {
     verbose: u8,
 
     /// Either plain text or '@' + prompt label to use a prompt from the
-    /// configuration.  If no question is given, the default prompt will
-    /// be used.  May be augmented with context.
+    /// configuration. If no question is given, the default prompt will
+    /// be used. May be augmented with context.
     question: Option<String>,
 }
 
@@ -247,6 +259,7 @@ fn process(args: &Args) -> Result<(), String> {
     }
 
     let prompt = config.resolve_prompt(
+        args.history.as_deref(),
         args.system.as_deref(),
         args.question.as_deref(),
         args.model.as_deref(),
@@ -264,6 +277,16 @@ fn process(args: &Args) -> Result<(), String> {
             "querying model {:?}",
             prompt.model.as_deref().unwrap_or("")
         );
+
+        if let Some(ref xs) = prompt.history {
+            for message in xs {
+                log::info!(
+                    "using history: {} wrote {:?}",
+                    message.role,
+                    message.content
+                );
+            }
+        }
 
         if let Some(ref x) = prompt.system {
             log::info!("using system prompt {x:?}");
@@ -570,6 +593,42 @@ mod tests {
 
         // A normal prompt with prompting options is still fine.
         assert!(ok(&["lui", "hello", "-r", "x.pdf", "-m", "gemma"]));
+    }
+
+    #[test]
+    fn history_arg_parses_multiple_and_is_standalone() {
+        use clap::Parser;
+
+        // Multiple `role:content` values parse into a list of messages.
+        // (The question is given first so -H's greedy values don't
+        // swallow it.)
+        let args = Args::try_parse_from([
+            "lui",
+            "hello",
+            "-H",
+            "user:foo",
+            "assistant:bar",
+        ])
+        .unwrap();
+        assert_eq!(
+            args.history,
+            Some(vec![
+                parse_message("user:foo").unwrap(),
+                parse_message("assistant:bar").unwrap(),
+            ])
+        );
+
+        // An ill-formed value is rejected by the value parser.
+        assert!(
+            Args::try_parse_from(["lui", "hello", "-H", "no-role"])
+                .is_err()
+        );
+
+        // --history is a prompting option, so it conflicts with --prune.
+        assert!(
+            Args::try_parse_from(["lui", "--prune", "-H", "user:foo"])
+                .is_err()
+        );
     }
 
     fn new_streamed_output_reader(

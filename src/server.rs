@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::borrow::Cow;
 use std::io::{BufRead, BufReader, Read};
@@ -437,7 +437,7 @@ struct FileRef {
     id: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Message {
     pub role: String,
     pub content: MessageContent,
@@ -447,15 +447,16 @@ pub struct Message {
 /// of typed parts (used when images accompany the text).
 ///
 /// `#[serde(untagged)]` makes the `Text` variant serialize as a bare
-/// JSON string.
-#[derive(Debug, Serialize)]
+/// JSON string, so text-only requests are byte-for-byte identical to
+/// before images were supported.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum MessageContent {
     Text(String),
     Parts(Vec<ContentPart>),
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "type")]
 pub enum ContentPart {
     #[serde(rename = "text")]
@@ -464,9 +465,52 @@ pub enum ContentPart {
     ImageUrl { image_url: ImageUrl },
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ImageUrl {
     pub url: String,
+}
+
+impl<'de> Deserialize<'de> for Message {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+
+        parse_message(&raw).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Parses a `role:content` conversation-history argument into a
+/// [`Message`].
+///
+/// The role must be `user` or `assistant`.  Leading spaces after the
+/// colon are trimmed.  The content becomes a plain-text message body.
+pub fn parse_message(raw: &str) -> Result<Message, String> {
+    let colon_pos = raw
+        .find(':')
+        .filter(|&pos| ["user", "assistant"].contains(&&raw[..pos]))
+        .ok_or_else(|| {
+            "history is not of form 'user:...' or 'assistant:...'"
+                .to_string()
+        })?;
+
+    let content_start_pos = (colon_pos + 1 < raw.len())
+        .then(|| {
+            raw[(colon_pos + 1)..]
+                .find(|c| c != ' ')
+                .map(|pos| pos + colon_pos + 1)
+        })
+        .flatten()
+        .ok_or_else(|| "history contains empty content".to_string())?;
+
+    let role = raw[..colon_pos].to_string();
+    let content = raw[content_start_pos..].to_string();
+
+    Ok(Message {
+        role,
+        content: MessageContent::Text(content),
+    })
 }
 
 pub enum OutputReader<T>
@@ -787,6 +831,7 @@ mod tests {
     fn test_prompt() -> Prompt {
         Prompt {
             label: String::new(),
+            history: None,
             system: None,
             question: "foo".to_string(),
             model: Some("bar".to_string()),
@@ -821,7 +866,7 @@ mod tests {
                 // The original prompt text must be preserved verbatim.
                 match &parts[0] {
                     ContentPart::Text { text } => {
-                        assert_eq!(text, "#Prompt\n\nq")
+                        assert_eq!(text, "#Prompt\n\nfoo")
                     }
                     other => {
                         panic!("expected text part, got {other:?}")
@@ -885,6 +930,7 @@ mod tests {
 
         let prompt = Prompt {
             label: String::new(),
+            history: None,
             system: Some("be brief".to_string()),
             question: "q".to_string(),
             model: Some("m".to_string()),
@@ -902,5 +948,106 @@ mod tests {
             messages.last().unwrap().content,
             MessageContent::Parts(_)
         ));
+    }
+
+    #[test]
+    fn parse_message_with_missing_role() {
+        assert!(parse_message("foo bar").is_err());
+    }
+
+    #[test]
+    fn parse_message_with_unrecognized_role() {
+        assert!(parse_message("baz:foo bar").is_err());
+    }
+
+    #[test]
+    fn parse_message_with_missing_message() {
+        assert!(parse_message("user:").is_err());
+        assert!(parse_message("user:   ").is_err());
+        assert!(parse_message("assistant:").is_err());
+        assert!(parse_message("assistant:   ").is_err());
+    }
+
+    #[test]
+    fn parse_message_with_correct_formatting() {
+        for role in ["user", "assistant"] {
+            let expected = Ok(Message {
+                role: role.to_string(),
+                content: MessageContent::Text("foo bar".to_string()),
+            });
+
+            assert_eq!(
+                parse_message(&dbg!(format!("{role}:foo bar"))),
+                expected
+            );
+            assert_eq!(
+                parse_message(&dbg!(format!("{role}: foo bar"))),
+                expected
+            );
+            assert_eq!(
+                parse_message(&dbg!(format!("{role}:  foo bar"))),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn parse_message_handles_multiline_content() {
+        for role in ["user", "assistant"] {
+            let expected = Ok(Message {
+                role: role.to_string(),
+                content: MessageContent::Text("foo\n\nbar".to_string()),
+            });
+
+            assert_eq!(
+                parse_message(&dbg!(format!("{role}:foo\n\nbar"))),
+                expected
+            );
+            assert_eq!(
+                parse_message(&dbg!(format!("{role}: foo\n\nbar"))),
+                expected
+            );
+            assert_eq!(
+                parse_message(&dbg!(format!("{role}:  foo\n\nbar"))),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn parse_message_splits_on_first_colon_only() {
+        // A colon inside the content is preserved; only the first colon
+        // (separating the role) splits.
+        assert_eq!(
+            parse_message("user:see: this"),
+            Ok(Message {
+                role: "user".to_string(),
+                content: MessageContent::Text("see: this".to_string()),
+            })
+        );
+
+        // A role that merely starts with a valid role is rejected.
+        assert!(parse_message("users:hi").is_err());
+    }
+
+    #[test]
+    fn message_deserializes_from_role_content_string() {
+        // The custom Deserialize is what config's `default-history` and
+        // a `[[prompt]]` history use, so exercise it (not just
+        // parse_message directly).
+        let message: Message =
+            serde_json::from_str(r#""assistant:hello there""#).unwrap();
+        assert_eq!(
+            message,
+            Message {
+                role: "assistant".to_string(),
+                content: MessageContent::Text(
+                    "hello there".to_string()
+                ),
+            }
+        );
+
+        // A malformed entry surfaces as a deserialization error.
+        assert!(serde_json::from_str::<Message>(r#""nope""#).is_err());
     }
 }

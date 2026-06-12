@@ -2,11 +2,14 @@ use serde::Deserialize;
 use std::path::PathBuf;
 
 use crate::prompt::Prompt;
-use crate::server::Server;
+use crate::server::{Message, Server};
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub server: Server,
+
+    #[serde(rename = "default-history")]
+    pub default_history: Option<Vec<Message>>,
 
     #[serde(rename = "default-system")]
     pub default_system: Option<String>,
@@ -48,6 +51,7 @@ impl Config {
 
     pub fn resolve_prompt(
         &self,
+        history: Option<&[Message]>,
         system: Option<&str>,
         question: Option<&str>,
         model: Option<&str>,
@@ -60,6 +64,8 @@ impl Config {
             if x.is_empty() {
                 Err("prompt is empty".to_string())
             } else {
+                let history =
+                    history.or(self.default_history.as_deref());
                 let system = system.or(self.default_system.as_deref());
                 let model = model
                     .or(self.default_model.as_deref())
@@ -69,6 +75,7 @@ impl Config {
 
                 Ok(Prompt {
                     label: String::new(),
+                    history: history.map(Vec::from),
                     system: system.map(str::to_string),
                     question: x.to_string(),
                     model: Some(model.to_string()),
@@ -101,8 +108,13 @@ impl Config {
                 }
             };
 
-            // Use the system prompt and model the user has given us
-            // instead of the one pre-specified for the prompt.
+            // Use the history, system prompt, and model that the user
+            // has given us instead of the one pre-specified for the
+            // prompt.
+            prompt.history = history
+                .map(Vec::from)
+                .or_else(|| prompt.history.clone())
+                .or_else(|| self.default_history.clone());
             prompt.system = system
                 .map(str::to_string)
                 .or_else(|| prompt.system.clone())
@@ -151,12 +163,14 @@ mod tests {
             Prompt {
                 label: "foo".to_string(),
                 model: Some("foo".to_string()),
+                history: None,
                 system: None,
                 question: "foo bar baz".to_string(),
             },
             Prompt {
                 label: "bar".to_string(),
                 model: Some("bar".to_string()),
+                history: None,
                 system: None,
                 question: "bar baz foo".to_string(),
             },
@@ -170,6 +184,7 @@ mod tests {
                 port: 5000,
                 api_key: "".to_string(),
             },
+            default_history: None,
             default_system: None,
             default_prompt: None,
             default_model: None,
@@ -197,6 +212,7 @@ mod tests {
         let ok_custom_m = || {
             Ok(Prompt {
                 label: "".to_string(),
+                history: None,
                 system: None,
                 model: Some("m".to_string()),
                 question: "...".to_string(),
@@ -205,6 +221,7 @@ mod tests {
         let ok_custom_um = || {
             Ok(Prompt {
                 label: "".to_string(),
+                history: None,
                 system: None,
                 model: Some("um".to_string()),
                 question: "...".to_string(),
@@ -290,7 +307,109 @@ mod tests {
             config.default_prompt = defp.map(|x| x.to_string());
             config.default_model = defm.map(|x| x.to_string());
 
-            assert_eq!(config.resolve_prompt(None, *q, *m), *expected);
+            assert_eq!(
+                config.resolve_prompt(None, None, *q, *m),
+                *expected
+            );
         }
+    }
+
+    /// Builds a conversation history from `role:content` strings.
+    fn make_history(items: &[&str]) -> Vec<Message> {
+        items
+            .iter()
+            .map(|s| crate::server::parse_message(s).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn resolve_prompt_history_precedence_for_text_question() {
+        let cli_history = make_history(&["user:cli"]);
+        let default_history = make_history(&["user:default"]);
+
+        let mut config = make_config_without_defaults();
+        config.default_model = Some("m".to_string());
+
+        // CLI history is used as given.
+        assert_eq!(
+            config
+                .resolve_prompt(
+                    Some(&cli_history),
+                    None,
+                    Some("hi"),
+                    None
+                )
+                .unwrap()
+                .history,
+            Some(cli_history.clone())
+        );
+
+        // Falls back to default-history when no CLI history is given.
+        config.default_history = Some(default_history.clone());
+        assert_eq!(
+            config
+                .resolve_prompt(None, None, Some("hi"), None)
+                .unwrap()
+                .history,
+            Some(default_history)
+        );
+
+        // CLI history overrides default-history.
+        assert_eq!(
+            config
+                .resolve_prompt(
+                    Some(&cli_history),
+                    None,
+                    Some("hi"),
+                    None
+                )
+                .unwrap()
+                .history,
+            Some(cli_history)
+        );
+    }
+
+    #[test]
+    fn resolve_prompt_history_precedence_for_named_prompt() {
+        let cli_history = make_history(&["user:cli"]);
+        let prompt_history = make_history(&["assistant:own"]);
+        let default_history = make_history(&["user:default"]);
+
+        // A named prompt's own history is used.
+        let mut config = make_config_without_defaults();
+        config.prompt[0].history = Some(prompt_history.clone());
+        assert_eq!(
+            config
+                .resolve_prompt(None, None, Some("@foo"), None)
+                .unwrap()
+                .history,
+            Some(prompt_history)
+        );
+
+        // CLI history overrides the named prompt's history.
+        assert_eq!(
+            config
+                .resolve_prompt(
+                    Some(&cli_history),
+                    None,
+                    Some("@foo"),
+                    None
+                )
+                .unwrap()
+                .history,
+            Some(cli_history)
+        );
+
+        // Falls back to default-history when neither CLI nor the named
+        // prompt set a history.
+        let mut config = make_config_without_defaults();
+        config.default_history = Some(default_history.clone());
+        assert_eq!(
+            config
+                .resolve_prompt(None, None, Some("@foo"), None)
+                .unwrap()
+                .history,
+            Some(default_history)
+        );
     }
 }
