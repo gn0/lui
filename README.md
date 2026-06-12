@@ -16,6 +16,9 @@ Compiling lui requires Rust 1.88.0 or newer because it uses [let chains](https:/
    - [Fill in docstring gaps](#fill-in-docstring-gaps)
    - [Review staged changes](#review-staged-changes)
    - [Ask ad hoc questions](#ask-ad-hoc-questions)
+   - [Ask about an image](#ask-about-an-image)
+   - [Ask about a document](#ask-about-a-document)
+   - [Few-shot prompting with history](#few-shot-prompting-with-history)
 5. [Detailed usage](#detailed-usage)
    - [No context](#no-context)
    - [Anonymous context](#anonymous-context)
@@ -202,6 +205,73 @@ Response:
 > This way, the new entry’s fields will be processed and reported as changes.
 
 That's not perfect Haskell code, but still a useful starting point if you haven't touched the code base in a while.
+
+### Ask about an image
+
+`-i` recognizes image files (PNG, JPEG, GIF, WebP) by their content and sends them to vision-capable models.
+(Other binary formats, like PDFs, are rejected with a hint to use `-r` instead.  See [Ask about a document](#ask-about-a-document) below.)
+
+```sh
+lui -m gemma3:27b \
+    -i diagram.png -- \
+    'What does this architecture diagram show? List the components.'
+```
+
+Images and text files can be mixed in one call.
+Each file passed through `-i` is routed by type, with images sent as vision input and text inlined into the prompt:
+
+```sh
+lui -m gemma3:27b \
+    -i mockup.png notes.txt -- \
+    'Does the mockup match the requirements in my notes?'
+```
+
+Image input requires a multimodal model (e.g., `gemma3` or `llama3.2-vision`).
+A text-only model will ignore the image.
+
+### Ask about a document
+
+For PDF, Word, etc. documents, and for files that are too large to paste into the prompt, use `-r`/`--rag` instead of `-i`.
+Lui uploads the files to Open WebUI's retrieval store and references them in the request, so the model retrieves only the relevant passages instead of reading the whole file:
+
+```sh
+lui -r handbook.pdf -- \
+    'What is the policy on carrying over unused vacation days?'
+```
+
+Lui deletes the uploaded files from the server as soon as the query finishes.
+If a run is interrupted (for example, Ctrl-C is pressed mid-answer), the upload is left on the server but recorded locally.
+Lui reminds you on a later run, and you can delete the leftovers with:
+
+```sh
+lui --prune
+```
+
+`--prune` only removes files that lui itself uploaded and failed to clean up.
+To delete every file your account can access on the server, you can run `lui --prune-all --yes`.
+
+### Few-shot prompting with history
+
+`-H`/`--history` seeds the conversation with prior turns, written as `user:...` and `assistant:...`.
+This is useful for few-shot prompting: state the task in the system prompt (`-s`), give the model a couple of worked examples with `-H`, then ask it to handle a new case.
+Lui orders the request conventionally (system prompt, then the examples, then your question), so the model sees the instruction before the demonstrations.
+
+Here the examples teach a terse and imperative style for a one-line summary to write for a function, which is easier to show than to describe:
+
+```sh
+lui -s 'Summarize what each function does in one imperative line.' \
+    -H 'user:fn f(s: &str) -> String { s.to_lowercase().replace(" ", "-") }' \
+       'assistant:Convert a string to a lowercase, hyphenated slug.' \
+       'user:def f(n): return n > 1 and all(n % i for i in range(2, n))' \
+       'assistant:Check whether a number is prime.' \
+    -- 'function f(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }'
+```
+
+Response:
+
+> Clamp x to the range [lo, hi].
+
+The `--` ends the `-H` list so that the final argument is taken as the question rather than as another history entry.
 
 ## Detailed usage
 
