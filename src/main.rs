@@ -258,6 +258,8 @@ fn process(args: &Args) -> Result<(), String> {
         return prune_all(&config.server, args.yes, args.dry_run_prune);
     }
 
+    warn_if_stale_uploads();
+
     let prompt = config.resolve_prompt(
         args.history.as_deref(),
         args.system.as_deref(),
@@ -353,6 +355,33 @@ fn process(args: &Args) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Warns if the local journal holds RAG uploads old enough to be
+/// abandoned leftovers (e.g. from an interrupted run), pointing the
+/// user at `--prune`.
+///
+/// Markers younger than the threshold are ignored so an instance of lui
+/// that is running concurrently is not flagged.
+///
+/// Any error while checking is silently downgraded to a debug log.
+fn warn_if_stale_uploads() {
+    const STALE_AFTER: std::time::Duration =
+        std::time::Duration::from_secs(30 * 60);
+
+    let Some(dir) = journal::pending_dir() else {
+        return;
+    };
+
+    match journal::count_older_than(&dir, STALE_AFTER) {
+        Ok(0) => {}
+        Ok(count) => log::warn!(
+            "{count} RAG upload(s) in {} are over 30 minutes old; \
+             run `lui --prune` to remove them",
+            dir.to_string_lossy()
+        ),
+        Err(x) => log::debug!("could not check pending uploads: {x}"),
+    }
 }
 
 /// Uploads each file matched by the RAG glob patterns and records its

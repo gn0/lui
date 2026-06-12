@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 /// Tracks the IDs of files that lui has uploaded to open-webui but not
 /// yet deleted, so that `--prune` can clean up uploads left behind by a
@@ -88,6 +89,55 @@ pub fn load(dir: &Path) -> Result<Vec<String>, String> {
     Ok(ids)
 }
 
+/// Counts marker files in `dir` whose last-modified time is at least
+/// `min_age` in the past.
+///
+/// Such marker files belong to RAG uploads that were almost certainly
+/// abandoned by an interrupted run, as opposed to ones a concurrent
+/// instance of lui is still using.
+///
+/// A missing directory counts as zero.  Markers whose modification time
+/// can't be read, or which appear to be in the future (clock skew), are
+/// treated as not stale.
+///
+/// # Errors
+///
+/// This function returns an error if the directory exists but cannot be
+/// read.
+pub fn count_older_than(
+    dir: &Path,
+    min_age: Duration,
+) -> Result<usize, String> {
+    let now = SystemTime::now();
+
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(x) if x.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(0);
+        }
+        Err(x) => {
+            return Err(format!("{}: {x}", dir.to_string_lossy()));
+        }
+    };
+
+    let mut count = 0;
+
+    for entry in entries {
+        let entry = entry
+            .map_err(|x| format!("{}: {x}", dir.to_string_lossy()))?;
+
+        if let Ok(modified) =
+            entry.metadata().and_then(|m| m.modified())
+            && let Ok(age) = now.duration_since(modified)
+            && age >= min_age
+        {
+            count += 1;
+        }
+    }
+
+    Ok(count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,5 +182,28 @@ mod tests {
 
         // Removing a missing marker is a no-op, not an error.
         remove(&dir.0, "id-a").unwrap();
+    }
+
+    #[test]
+    fn count_older_than_counts_only_stale_markers() {
+        let dir = TempDir::new("stale");
+        std::fs::create_dir_all(&dir.0).unwrap();
+
+        // A just-created marker is not stale.
+        std::fs::File::create(dir.0.join("fresh")).unwrap();
+
+        // A marker backdated an hour is stale.
+        let old = std::fs::File::create(dir.0.join("old")).unwrap();
+        old.set_modified(SystemTime::now() - Duration::from_secs(3600))
+            .unwrap();
+
+        let threshold = Duration::from_secs(30 * 60);
+        assert_eq!(count_older_than(&dir.0, threshold).unwrap(), 1);
+
+        // A missing directory counts as zero.
+        assert_eq!(
+            count_older_than(&dir.0.join("absent"), threshold).unwrap(),
+            0
+        );
     }
 }
