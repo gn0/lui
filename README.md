@@ -34,8 +34,8 @@ Compiling lui requires Rust 1.88.0 or newer because it uses [let chains](https:/
 + [X] Pose question without context.
 + [X] Pose question with context.
   - [X] Text as context.
-  - [ ] PDFs and Word documents as context.
-  - [ ] Image files as context.
+  - [X] PDFs and Word documents as context.
+  - [X] Image files as context.
 + [X] Set a system prompt.
 + [X] Stream the tokens from Open WebUI.
 + [X] Remove `<think></think>` blocks from the response by default.
