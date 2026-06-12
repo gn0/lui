@@ -15,21 +15,27 @@ impl Prompt {
     /// Converts the prompt into messages that [`Server::send`] can send
     /// to the model.
     ///
-    /// If a system prompt is present in `self`, the corresponding
-    /// message role is set to `system`.  The user prompt has role
-    /// `user`.
+    /// The order is the conventional one for a chat request: the
+    /// `system` prompt (if any) first, then the conversation `history`
+    /// (if any), then the user's question.  Putting the system prompt
+    /// first matters for two reasons:
+    ///
+    /// 1. Many chat templates only honor a system prompt if it leads
+    ///    the conversation.
+    /// 2. This is the right layout for few-shot prompting (instruction,
+    ///    then examples, then query).
     pub fn as_messages(&self) -> Vec<Message> {
         let mut result = Vec::new();
-
-        if let Some(ref xs) = self.history {
-            result.extend_from_slice(xs);
-        }
 
         if let Some(ref x) = self.system {
             result.push(Message {
                 role: "system".to_string(),
                 content: MessageContent::Text(x.to_string()),
             });
+        }
+
+        if let Some(ref xs) = self.history {
+            result.extend_from_slice(xs);
         }
 
         result.push(Message {
@@ -143,8 +149,8 @@ mod tests {
 
     #[test]
     fn prompt_as_messages_with_history_and_system_prompt() {
-        // Order must be: history first, then the system prompt, then
-        // the user's question.
+        // Order must be: system prompt first, then history, then the
+        // user's question.
         assert_eq!(
             Prompt {
                 label: String::new(),
@@ -161,14 +167,14 @@ mod tests {
             .as_messages(),
             vec![
                 Message {
+                    role: "system".to_string(),
+                    content: MessageContent::Text("baz".to_string())
+                },
+                Message {
                     role: "user".to_string(),
                     content: MessageContent::Text(
                         "lorem ipsum".to_string()
                     )
-                },
-                Message {
-                    role: "system".to_string(),
-                    content: MessageContent::Text("baz".to_string())
                 },
                 Message {
                     role: "user".to_string(),
