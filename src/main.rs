@@ -552,7 +552,7 @@ fn main() {
     let args = Args::parse();
 
     let max_level = match args.verbose {
-        0 => log::Level::Error,
+        0 => log::Level::Warn,
         1 => log::Level::Info,
         2 => log::Level::Debug,
         3 => log::Level::Trace,
