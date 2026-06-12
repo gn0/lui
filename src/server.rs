@@ -73,12 +73,14 @@ impl Server {
 
             Ok(OutputReader::Streamed(TokenIter {
                 reader: BufReader::new(body_reader),
+                sources: Vec::new(),
             }))
         } else {
-            let output = get_complete_output(response)?;
+            let (output, sources) = get_complete_output(response)?;
 
             Ok(OutputReader::Complete(OutputIter {
                 output: Some(output),
+                sources,
             }))
         }
     }
@@ -345,13 +347,13 @@ fn multipart_boundary() -> String {
 ///   UTF-8.
 fn get_complete_output(
     response: http::response::Response<ureq::Body>,
-) -> Result<Output, String> {
+) -> Result<(Output, Vec<Value>), String> {
     let value: Value = response
         .into_body()
         .read_json()
         .map_err(|x| format!("{x}"))?;
 
-    Ok(Output {
+    let output = Output {
         message: value["choices"][0]["message"]["content"]
             .as_str()
             .ok_or_else(|| "malformed response".to_string())?
@@ -367,7 +369,12 @@ fn get_complete_output(
                 .ok_or_else(|| "malformed response".to_string())?
                 .to_string(),
         ),
-    })
+    };
+
+    let sources =
+        value["sources"].as_array().cloned().unwrap_or_default();
+
+    Ok((output, sources))
 }
 
 /// Builds the message list sent to the model: one `user` message per
@@ -521,6 +528,26 @@ where
     Streamed(TokenIter<T>),
 }
 
+impl<T> OutputReader<T>
+where
+    T: std::io::Read,
+{
+    /// The `sources` (citation metadata) Open WebUI returned with the
+    /// response, if any.
+    ///
+    /// Empty when the server sent none.  For a RAG request, this is the
+    /// silent-failure signal that the uploaded file was not used.
+    ///
+    /// Only call this function if the response has already been
+    /// consumed.
+    pub fn sources(&self) -> &[Value] {
+        match self {
+            OutputReader::Complete(output_iter) => &output_iter.sources,
+            OutputReader::Streamed(token_iter) => &token_iter.sources,
+        }
+    }
+}
+
 impl<T> Iterator for OutputReader<T>
 where
     T: std::io::Read,
@@ -541,6 +568,7 @@ where
 
 pub struct OutputIter {
     output: Option<Output>,
+    sources: Vec<Value>,
 }
 
 impl OutputIter {
@@ -548,6 +576,7 @@ impl OutputIter {
     pub fn new(output: Output) -> Self {
         Self {
             output: Some(output),
+            sources: Vec::new(),
         }
     }
 }
@@ -569,6 +598,7 @@ where
     T: std::io::Read,
 {
     reader: BufReader<T>,
+    sources: Vec<Value>,
 }
 
 impl<T> TokenIter<T>
@@ -577,7 +607,10 @@ where
 {
     #[allow(unused)]
     pub fn new(reader: BufReader<T>) -> Self {
-        Self { reader }
+        Self {
+            reader,
+            sources: Vec::new(),
+        }
     }
 }
 
@@ -626,6 +659,14 @@ impl<T: std::io::Read> Iterator for TokenIter<T> {
                 return None;
             };
 
+            // Open WebUI sends RAG citations in an object that carries
+            // a top-level `sources` array.  Save it for the caller.
+            if let Some(array) = value["sources"].as_array()
+                && !array.is_empty()
+            {
+                self.sources = array.clone();
+            }
+
             let content = &value["choices"][0]["delta"]["content"];
 
             return Some(Output {
@@ -646,6 +687,31 @@ pub struct Output {
     pub message: String,
     pub prompt_tokens: Option<u64>,
     pub approximate_total: Option<String>,
+}
+
+/// Returns a best-effort human-readable label for one entry of
+/// Open WebUI's `sources` array.
+///
+/// The exact structure of a source object varies by Open WebUI version,
+/// so this function tries the fields most likely to hold a document
+/// name and falls back to a placeholder.
+pub fn source_label(source: &Value) -> String {
+    for candidate in [
+        &source["source"]["name"],
+        &source["source"]["id"],
+        &source["name"],
+        &source["metadata"][0]["name"],
+        &source["metadata"][0]["source"],
+        &source["file"]["filename"],
+    ] {
+        if let Some(text) = candidate.as_str()
+            && !text.is_empty()
+        {
+            return text.to_string();
+        }
+    }
+
+    "(unknown source)".to_string()
 }
 
 /// Removes the leading `<think></think>` block from a complete
@@ -1049,5 +1115,42 @@ mod tests {
 
         // A malformed entry surfaces as a deserialization error.
         assert!(serde_json::from_str::<Message>(r#""nope""#).is_err());
+    }
+
+    #[test]
+    fn source_label_extracts_a_name_or_falls_back() {
+        use serde_json::json;
+
+        assert_eq!(
+            source_label(&json!({"source": {"name": "notes.txt"}})),
+            "notes.txt"
+        );
+        assert_eq!(
+            source_label(&json!({"metadata": [{"name": "doc.pdf"}]})),
+            "doc.pdf"
+        );
+        assert_eq!(source_label(&json!({"name": "x"})), "x");
+        assert_eq!(
+            source_label(&json!({"unrecognized": true})),
+            "(unknown source)"
+        );
+    }
+
+    #[test]
+    fn token_iter_captures_sources_from_stream() {
+        // A trailing chunk carrying a top-level `sources` array should
+        // be stashed (not emitted as content) and readable afterwards.
+        let stream = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n",
+            "data: {\"sources\":[{\"source\":{\"name\":\"notes.txt\"}}]}\n",
+            "data: [DONE]\n",
+        );
+
+        let mut iter =
+            TokenIter::new(BufReader::new(stream.as_bytes()));
+        while iter.next().is_some() {}
+
+        assert_eq!(iter.sources.len(), 1);
+        assert_eq!(source_label(&iter.sources[0]), "notes.txt");
     }
 }

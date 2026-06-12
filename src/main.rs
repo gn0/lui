@@ -149,6 +149,12 @@ where
             inside_think_block: false,
         }
     }
+
+    /// The citation `sources` the server returned, if any.  Only
+    /// meaningful once the response has been fully consumed.
+    fn sources(&self) -> &[serde_json::Value] {
+        self.output_reader.sources()
+    }
 }
 
 impl<T> Iterator for OutputNormalizer<T>
@@ -321,13 +327,15 @@ fn process(args: &Args) -> Result<(), String> {
         !args.no_stream,
     )?;
 
-    let normalizer = OutputNormalizer::new(
+    // Kept alive past the loop so the citation `sources` captured while
+    // streaming can be read once the response is complete.
+    let mut normalizer = OutputNormalizer::new(
         response,
         args.keep_think_block,
         args.no_stream,
     );
 
-    for output in normalizer {
+    while let Some(output) = normalizer.next() {
         if args.output_json {
             let output_json = serde_json::to_string(&output)
                 .map_err(|x| x.to_string())?;
@@ -349,6 +357,8 @@ fn process(args: &Args) -> Result<(), String> {
             }
         }
     }
+
+    report_sources(args, &rag_file_ids, normalizer.sources())?;
 
     if !args.keep_uploads {
         cleanup_uploads(&config.server, &rag_file_ids);
@@ -382,6 +392,51 @@ fn warn_if_stale_uploads() {
         ),
         Err(x) => log::debug!("could not check pending uploads: {x}"),
     }
+}
+
+/// Surfaces the citation `sources` the server returned for a RAG query.
+///
+/// In text mode, the sources are appended to stdout as a Markdown-like
+/// footer, printed as the last part of the answer.
+///
+/// In `--output-json` mode, they are emitted as a final JSON object so
+/// stdout stays valid JSON.  If RAG files were sent but no sources came
+/// back, warn the user because the server likely ignored them.
+fn report_sources(
+    args: &Args,
+    rag_file_ids: &[String],
+    sources: &[serde_json::Value],
+) -> Result<(), String> {
+    if !sources.is_empty() {
+        if args.output_json {
+            let json = serde_json::to_string(&serde_json::json!({
+                "sources": sources,
+            }))
+            .map_err(|x| x.to_string())?;
+
+            println!("{json}");
+        } else {
+            print!("\n\n---\n");
+            for (index, source) in sources.iter().enumerate() {
+                print!(
+                    "\n{}. {}",
+                    index + 1,
+                    server::source_label(source)
+                );
+            }
+            println!();
+
+            let _ = std::io::stdout().flush();
+        }
+    } else if !rag_file_ids.is_empty() {
+        log::warn!(
+            "the server returned no sources; the uploaded RAG files \
+             may not have been used, or Open WebUI's JSON schema may \
+             have drifted"
+        );
+    }
+
+    Ok(())
 }
 
 /// Uploads each file matched by the RAG glob patterns and records its
