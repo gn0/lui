@@ -275,10 +275,16 @@ fn process(args: &Args) -> Result<(), String> {
 
     let context = Context::load(args.include.as_deref())?;
 
-    let rag_file_ids = match args.rag.as_deref() {
+    let uploads = match args.rag.as_deref() {
         Some(patterns) => upload_rag(&config.server, patterns)?,
         None => Vec::new(),
     };
+
+    // The bare UUIDs are what the chat request, journaling, and cleanup
+    // all use as keys.  The paths in `uploads` are only used to label
+    // sources.
+    let rag_file_ids: Vec<String> =
+        uploads.iter().map(|u| u.id.clone()).collect();
 
     if log::log_enabled!(log::Level::Info) {
         log::info!(
@@ -358,7 +364,7 @@ fn process(args: &Args) -> Result<(), String> {
         }
     }
 
-    report_sources(args, &rag_file_ids, normalizer.sources())?;
+    report_sources(args, &uploads, normalizer.sources())?;
 
     if !args.keep_uploads {
         cleanup_uploads(&config.server, &rag_file_ids);
@@ -394,41 +400,83 @@ fn warn_if_stale_uploads() {
     }
 }
 
+/// Metadata for a file uploaded for a RAG request.
+struct RagUpload {
+    /// Server-assigned UUID.
+    id: String,
+    /// The path the user gave on the command line.
+    name: String,
+}
+
 /// Surfaces the citation `sources` the server returned for a RAG query.
 ///
 /// In text mode, the sources are appended to stdout as a Markdown-like
-/// footer, printed as the last part of the answer.
+/// footer, printed as the last part of the answer.  Each source's UUID
+/// is resolved back to the original filename when it matches one of the
+/// `uploads`, falling back to [`server::source_label`] otherwise.
 ///
 /// In `--output-json` mode, they are emitted as a final JSON object so
-/// stdout stays valid JSON.  If RAG files were sent but no sources came
-/// back, warn the user because the server likely ignored them.
+/// stdout stays valid JSON.  Each resolvable source gains a
+/// `resolved_name` field while its raw fields are preserved.
+///
+/// If RAG files were sent but no sources came back, warn the user
+/// because the server likely ignored them.
 fn report_sources(
     args: &Args,
-    rag_file_ids: &[String],
+    uploads: &[RagUpload],
     sources: &[serde_json::Value],
 ) -> Result<(), String> {
+    // The (id, display name) pairs the resolver matches sources
+    // against.
+    let pairs: Vec<(String, String)> = uploads
+        .iter()
+        .map(|u| (u.id.clone(), u.name.clone()))
+        .collect();
+
     if !sources.is_empty() {
         if args.output_json {
+            let with_resolved: Vec<serde_json::Value> = sources
+                .iter()
+                .map(|source| {
+                    let mut value = source.clone();
+                    if let Some(object) = value.as_object_mut() {
+                        if let Some(name) =
+                            server::resolve_source_label(source, &pairs)
+                        {
+                            object.insert(
+                                "resolved_name".to_string(),
+                                serde_json::Value::String(name),
+                            );
+                        }
+                    }
+                    value
+                })
+                .collect();
+
             let json = serde_json::to_string(&serde_json::json!({
-                "sources": sources,
+                "sources": with_resolved,
             }))
             .map_err(|x| x.to_string())?;
 
             println!("{json}");
         } else {
             print!("\n\n---\n");
+
             for (index, source) in sources.iter().enumerate() {
-                print!(
-                    "\n{}. {}",
-                    index + 1,
-                    server::source_label(source)
-                );
+                let label =
+                    server::resolve_source_label(source, &pairs)
+                        .unwrap_or_else(|| {
+                            server::source_label(source)
+                        });
+
+                print!("\n{}. `{}`", index + 1, label);
             }
+
             println!();
 
             let _ = std::io::stdout().flush();
         }
-    } else if !rag_file_ids.is_empty() {
+    } else if !uploads.is_empty() {
         log::warn!(
             "the server returned no sources; the uploaded RAG files \
              may not have been used, or Open WebUI's JSON schema may \
@@ -451,7 +499,7 @@ fn report_sources(
 fn upload_rag(
     server: &Server,
     patterns: &[String],
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<RagUpload>, String> {
     let paths = context::expand_rag_paths(patterns)?;
     let dir = journal::pending_dir();
 
@@ -464,7 +512,7 @@ fn upload_rag(
 
     log::info!("uploading {} RAG files", paths.len());
 
-    let mut ids = Vec::new();
+    let mut uploads = Vec::new();
 
     for path in &paths {
         log::debug!("uploading RAG file {path:?}");
@@ -477,10 +525,13 @@ fn upload_rag(
             log::warn!("could not record upload {id}: {x}");
         }
 
-        ids.push(id);
+        uploads.push(RagUpload {
+            id,
+            name: path.to_string_lossy().into_owned(),
+        });
     }
 
-    Ok(ids)
+    Ok(uploads)
 }
 
 /// Deletes each ID from the server and, on success, drops its journal

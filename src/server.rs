@@ -714,6 +714,44 @@ pub fn source_label(source: &Value) -> String {
     "(unknown source)".to_string()
 }
 
+/// Resolves a source entry back to the original local filename when its
+/// citation refers to a file lui uploaded for this RAG request.
+///
+/// Open WebUI's `sources` carry the server-assigned file UUID, not the
+/// name the user typed.  `uploads` is the `(id, display name)` mapping
+/// captured at upload time.  This returns the display name of the
+/// upload whose ID matches, or `None` if the ID is absent or unknown
+/// (the caller can then fall back to [`source_label`]).
+///
+/// Matching is restricted to `source.source.id`, i.e., the `id` of
+/// the retrieved item, which for an uploaded file is its UUID.  In
+/// particular the `document` field (retrieved snippet *text*) is never
+/// searched, so a document that merely mentions a UUID cannot be
+/// mislabeled as that upload.
+///
+/// Schema reference: open-webui v0.9.6 (tag commit
+/// 1a97751e376e00a1897bc3679215ae1c7bd8fd42),
+/// `backend/open_webui/retrieval/utils.py`, `get_sources_from_items`:
+///
+/// ```text
+/// source = {
+///     'source':   query_result['file'],          # item: {type, id, name, ...}
+///     'document': query_result['documents'][0],   # retrieved chunk strings
+///     'metadata': query_result['metadatas'][0],   # per-chunk metadata dicts
+/// }
+/// ```
+pub fn resolve_source_label(
+    source: &Value,
+    uploads: &[(String, String)],
+) -> Option<String> {
+    let id = source["source"]["id"].as_str()?;
+
+    uploads
+        .iter()
+        .find(|(upload_id, _)| upload_id == id)
+        .map(|(_, name)| name.clone())
+}
+
 /// Removes the leading `<think></think>` block from a complete
 /// response.
 pub fn remove_think_block(message: &str) -> Cow<'_, str> {
@@ -1133,6 +1171,112 @@ mod tests {
         assert_eq!(
             source_label(&json!({"unrecognized": true})),
             "(unknown source)"
+        );
+    }
+
+    // The source-object fixtures in the tests below mirror the `sources`
+    // array Open WebUI returns from /api/chat/completions for a RAG
+    // request, so that resolution is tested against the real schema.
+    //
+    // Schema reference: open-webui v0.9.6 (tag commit
+    // 1a97751e376e00a1897bc3679215ae1c7bd8fd42),
+    // backend/open_webui/retrieval/utils.py, get_sources_from_items:
+    //
+    //     source = {
+    //         'source':   query_result['file'],        # item: {type, id, name}
+    //         'document': query_result['documents'][0],  # chunk strings
+    //         'metadata': query_result['metadatas'][0],  # per-chunk dicts
+    //     }
+    //     if 'distances' in query_result and query_result['distances']:
+    //         source['distances'] = query_result['distances'][0]
+    //
+    // The uploaded file's UUID therefore lives at source["source"]["id"].
+    // That is the only field resolve_source_label trusts.
+
+    /// A source that has the structure of the output of
+    /// `get_sources_from_items`, citing `file_id` across `n` retrieved
+    /// chunks.
+    fn fake_source(file_id: &str, name: &str, n: usize) -> Value {
+        use serde_json::json;
+
+        json!({
+            "source": {"type": "file", "id": file_id, "name": name},
+            "document": vec!["...retrieved passage...".to_string(); n],
+            "metadata": (0..n)
+                .map(|i| json!({"file_id": file_id, "page": i + 1}))
+                .collect::<Vec<_>>(),
+            "distances": vec![0.1; n],
+        })
+    }
+
+    #[test]
+    fn resolve_source_label_matches_on_source_id() {
+        let uploads = vec![
+            ("uuid-a".to_string(), "docs/notes.txt".to_string()),
+            ("uuid-b".to_string(), "handbook.pdf".to_string()),
+        ];
+
+        // A full, realistically-shaped source resolves via source.id.
+        assert_eq!(
+            resolve_source_label(
+                &fake_source("uuid-b", "handbook.pdf", 2),
+                &uploads
+            ),
+            Some("handbook.pdf".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_source_label_ignores_uuid_in_snippet_text() {
+        use serde_json::json;
+
+        // The retrieved snippet text happens to mention an uploaded id,
+        // but source.source.id belongs to a different, unknown
+        // document.  Only source.source.id is trusted, so this must
+        // *not* resolve.
+        let uploads =
+            vec![("uuid-a".to_string(), "secrets.md".to_string())];
+
+        let source = json!({
+            "source": {"type": "file", "id": "uuid-other"},
+            "document": ["The internal file id is uuid-a, fwiw."],
+            "metadata": [{"file_id": "uuid-other"}],
+        });
+
+        assert_eq!(resolve_source_label(&source, &uploads), None);
+    }
+
+    #[test]
+    fn resolve_source_label_returns_none_for_unknown_id() {
+        let uploads =
+            vec![("uuid-a".to_string(), "notes.txt".to_string())];
+
+        assert_eq!(
+            resolve_source_label(
+                &fake_source("uuid-z", "uuid-z", 1),
+                &uploads
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_source_label_uses_only_the_cited_upload() {
+        // Two files were uploaded, but the model cited only the second.
+        // The server returns a single source whose source.id is file_b's.
+        // Resolution must label it file_b.md and never confuse it with
+        // file_a, which is stored first in `uploads`.
+        let uploads = vec![
+            ("uuid-a".to_string(), "file_a.md".to_string()),
+            ("uuid-b".to_string(), "file_b.md".to_string()),
+        ];
+
+        assert_eq!(
+            resolve_source_label(
+                &fake_source("uuid-b", "file_b.md", 1),
+                &uploads
+            ),
+            Some("file_b.md".to_string())
         );
     }
 
