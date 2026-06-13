@@ -68,6 +68,10 @@ struct Args {
     #[arg(long, short = 'S')]
     no_stream: bool,
 
+    /// Don't print the RAG source excerpts, only the filenames.
+    #[arg(long, short = 'E')]
+    hide_excerpts: bool,
+
     /// Don't delete files uploaded for RAG (-r) after the query.
     #[arg(long)]
     keep_uploads: bool,
@@ -81,7 +85,7 @@ struct Args {
         conflicts_with_all = [
             "prune_all", "question", "rag", "include", "history",
             "model", "system", "output_json", "keep_think_block",
-            "no_stream", "keep_uploads",
+            "no_stream", "keep_uploads", "hide_excerpts",
         ]
     )]
     prune: bool,
@@ -95,7 +99,7 @@ struct Args {
         conflicts_with_all = [
             "question", "rag", "include", "history", "model",
             "system", "output_json", "keep_think_block", "no_stream",
-            "keep_uploads",
+            "keep_uploads", "hide_excerpts",
         ]
     )]
     prune_all: bool,
@@ -409,6 +413,8 @@ struct RagUpload {
 }
 
 /// Surfaces the citation `sources` the server returned for a RAG query.
+/// See the [Open WebUI sources
+/// schema](crate::server#note-open-webui-sources-schema) note.
 ///
 /// In text mode, the sources are appended to stdout as a Markdown-like
 /// footer, printed as the last part of the answer.  Each source's UUID
@@ -448,6 +454,12 @@ fn report_sources(
                                 serde_json::Value::String(name),
                             );
                         }
+                        if !args.hide_excerpts {
+                            object.insert(
+                                "excerpts".to_string(),
+                                excerpts_json(source),
+                            );
+                        }
                     }
                     value
                 })
@@ -470,6 +482,10 @@ fn report_sources(
                         });
 
                 print!("\n{}. `{}`", index + 1, label);
+
+                if !args.hide_excerpts {
+                    print_excerpts(source);
+                }
             }
 
             println!();
@@ -485,6 +501,66 @@ fn report_sources(
     }
 
     Ok(())
+}
+
+/// The longest excerpt printed in the text footer before truncation.
+const EXCERPT_MAX_CHARS: usize = 200;
+
+/// Prints one source's retrieved passages as a Markdown bullet list
+/// under its citation, each prefixed with its page when known:
+///
+/// ```text
+///    - p. 12: "Unused vacation days carry over up to a maximum of..."
+/// ```
+fn print_excerpts(source: &serde_json::Value) {
+    for excerpt in server::source_excerpts(source) {
+        // Truncate to keep the terminal footer compact.
+        let text = format_excerpt_text(&excerpt.text);
+
+        if text.is_empty() {
+            continue;
+        }
+
+        match excerpt.page {
+            Some(page) => print!("\n   - p. {page}: \"{text}\""),
+            None => print!("\n   - \"{text}\""),
+        }
+    }
+}
+
+/// Normalizes the excerpt's internal whitespace and truncates the
+/// excerpt to [`EXCERPT_MAX_CHARS`] characters (not bytes, to avoid
+/// splitting multi-byte text mid-character).
+fn format_excerpt_text(text: &str) -> String {
+    let collapsed =
+        text.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    let mut chars = collapsed.chars();
+    let truncated: String =
+        chars.by_ref().take(EXCERPT_MAX_CHARS).collect();
+
+    if chars.next().is_some() {
+        format!("{truncated}...")
+    } else {
+        truncated
+    }
+}
+
+/// Builds the JSON `excerpts` array for one source: the full,
+/// untruncated passages with their page labels.
+fn excerpts_json(source: &serde_json::Value) -> serde_json::Value {
+    let excerpts: Vec<serde_json::Value> =
+        server::source_excerpts(source)
+            .into_iter()
+            .map(|excerpt| {
+                serde_json::json!({
+                    "page": excerpt.page,
+                    "text": excerpt.text,
+                })
+            })
+            .collect();
+
+    serde_json::Value::Array(excerpts)
 }
 
 /// Uploads each file matched by the RAG glob patterns and records its
@@ -687,6 +763,38 @@ mod tests {
     use super::*;
     use crate::server::TokenIter;
     use std::io::BufReader;
+
+    #[test]
+    fn format_excerpt_text_normalizes_and_truncates() {
+        assert_eq!(
+            format_excerpt_text("a\n  b\tc"),
+            "a b c".to_string()
+        );
+
+        // A passage longer than the cap is truncated to the cap with an
+        // ellipsis appended.
+        let long = "x".repeat(EXCERPT_MAX_CHARS + 1);
+        let formatted = format_excerpt_text(&long);
+        assert_eq!(
+            formatted,
+            format!("{}...", "x".repeat(EXCERPT_MAX_CHARS))
+        );
+
+        // A passage exactly at the cap is not given an ellipsis.
+        let exact = "y".repeat(EXCERPT_MAX_CHARS);
+        assert_eq!(format_excerpt_text(&exact), exact);
+    }
+
+    #[test]
+    fn hide_excerpts_flag_parses() {
+        use clap::Parser;
+
+        let args = Args::try_parse_from(["lui", "-E", "foo"]).unwrap();
+        assert!(args.hide_excerpts);
+
+        let args = Args::try_parse_from(["lui", "foo"]).unwrap();
+        assert!(!args.hide_excerpts);
+    }
 
     #[test]
     fn prune_all_requires_confirmation() {

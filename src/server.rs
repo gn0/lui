@@ -1,3 +1,55 @@
+//! HTTP client for open-webui's chat-completions and file endpoints.
+//!
+//! ## Note: Open WebUI sources schema
+//!
+//! Several functions in this module and in `main.rs` interpret the
+//! `sources` array that Open WebUI returns from `/api/chat/completions`
+//! for a RAG request.  Its schema is not part of any documented API, so
+//! the assumptions are described here.  Every dependent site links back
+//! to this note (`crate::server#note-open-webui-sources-schema`).
+//!
+//! Pinned to **open-webui v0.9.6** (tag commit
+//! `1a97751e376e00a1897bc3679215ae1c7bd8fd42`): `get_sources_from_items`
+//! in [`retrieval/utils.py`] builds each entry, and `get_source_context`
+//! in [`utils/middleware.py`] numbers the citations the model is told to
+//! use.
+//!
+//! Each entry of the top-level `sources` array looks like this:
+//!
+//! ```json
+//! {
+//!   "source":   { "id": "<file-uuid>", "type": "file" },
+//!   "document": ["<chunk text>", "..."],
+//!   "metadata": [{ "...": "..." }],
+//!   "distances": [0.1]
+//! }
+//! ```
+//!
+//! Fields we rely on (verified against v0.9.6's response):
+//!
+//! - `source.source.id`: the uploaded file's UUID, equal to every
+//!   `metadata[i].file_id`.  This is the authoritative key for mapping a
+//!   source back to an upload. `source.source` carries no `name`, which
+//!   is why a naive label printed the UUID.
+//! - `document[i]` is paired one-to-one with `metadata[i]`.  An entry
+//!   whose `document` is empty contributed no `<source>` tag to the
+//!   prompt, so it is invisible to the model.
+//! - `metadata[i].source`/`.name`: the original *basename* (loader
+//!   dependent), e.g., `report.pdf`.  `metadata[i].page` (0-based int)
+//!   and `metadata[i].page_label` (1-based string) locate the chunk.
+//! - Citation numbering: `get_source_context` assigns `[N]` per distinct
+//!   `metadata[i].source` (falling back to `source.source.id`), in array
+//!   order, counting only document-bearing entries.  It emits
+//!   `<source id="N">` and tells the model to cite `[N]`.  The array
+//!   returned to us is that same list, in that same order.
+//!
+//! The schema drifts between versions, so every reader stays defensive:
+//! a missing or wrongly-typed field degrades gracefully rather than
+//! panicking.
+//!
+//! [`retrieval/utils.py`]: https://github.com/open-webui/open-webui/blob/v0.9.6/backend/open_webui/retrieval/utils.py
+//! [`utils/middleware.py`]: https://github.com/open-webui/open-webui/blob/v0.9.6/backend/open_webui/utils/middleware.py
+
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::borrow::Cow;
@@ -371,6 +423,7 @@ fn get_complete_output(
         ),
     };
 
+    // See Note [Open WebUI sources schema].
     let sources =
         value["sources"].as_array().cloned().unwrap_or_default();
 
@@ -660,7 +713,8 @@ impl<T: std::io::Read> Iterator for TokenIter<T> {
             };
 
             // Open WebUI sends RAG citations in an object that carries
-            // a top-level `sources` array.  Save it for the caller.
+            // a top-level `sources` array (see Note [Open WebUI sources
+            // schema]).  Save it for the caller.
             if let Some(array) = value["sources"].as_array()
                 && !array.is_empty()
             {
@@ -690,11 +744,12 @@ pub struct Output {
 }
 
 /// Returns a best-effort human-readable label for one entry of
-/// Open WebUI's `sources` array.
+/// Open WebUI's `sources` array (see the [Open WebUI sources
+/// schema](crate::server#note-open-webui-sources-schema) note).
 ///
-/// The exact structure of a source object varies by Open WebUI version,
-/// so this function tries the fields most likely to hold a document
-/// name and falls back to a placeholder.
+/// Tries the fields most likely to hold a document name, in decreasing
+/// order of specificity, and falls back to a placeholder.  Prefer
+/// [`resolve_source_label`] when the upload map is available.
 pub fn source_label(source: &Value) -> String {
     for candidate in [
         &source["source"]["name"],
@@ -717,29 +772,16 @@ pub fn source_label(source: &Value) -> String {
 /// Resolves a source entry back to the original local filename when its
 /// citation refers to a file lui uploaded for this RAG request.
 ///
-/// Open WebUI's `sources` carry the server-assigned file UUID, not the
-/// name the user typed.  `uploads` is the `(id, display name)` mapping
-/// captured at upload time.  This returns the display name of the
-/// upload whose ID matches, or `None` if the ID is absent or unknown
-/// (the caller can then fall back to [`source_label`]).
+/// `uploads` is the `(id, display name)` mapping captured at upload
+/// time.  This returns the display name of the upload whose ID matches,
+/// or `None` if the ID is absent or unknown (the caller can then fall
+/// back to [`source_label`]).
 ///
-/// Matching is restricted to `source.source.id`, i.e., the `id` of
-/// the retrieved item, which for an uploaded file is its UUID.  In
-/// particular the `document` field (retrieved snippet *text*) is never
-/// searched, so a document that merely mentions a UUID cannot be
-/// mislabeled as that upload.
-///
-/// Schema reference: open-webui v0.9.6 (tag commit
-/// 1a97751e376e00a1897bc3679215ae1c7bd8fd42),
-/// `backend/open_webui/retrieval/utils.py`, `get_sources_from_items`:
-///
-/// ```text
-/// source = {
-///     'source':   query_result['file'],          # item: {type, id, name, ...}
-///     'document': query_result['documents'][0],   # retrieved chunk strings
-///     'metadata': query_result['metadatas'][0],   # per-chunk metadata dicts
-/// }
-/// ```
+/// Matching is restricted to `source.source.id` (see the [Open WebUI
+/// sources schema](crate::server#note-open-webui-sources-schema) note),
+/// i.e., the uploaded file's UUID.  In particular the `document` field
+/// (retrieved snippet *text*) is never searched, so a document that
+/// merely mentions a UUID cannot be mislabeled as that upload.
 pub fn resolve_source_label(
     source: &Value,
     uploads: &[(String, String)],
@@ -750,6 +792,56 @@ pub fn resolve_source_label(
         .iter()
         .find(|(upload_id, _)| upload_id == id)
         .map(|(_, name)| name.clone())
+}
+
+/// A retrieved passage from a RAG source.
+pub struct Excerpt {
+    pub page: Option<String>,
+    pub text: String,
+}
+
+/// Extracts the retrieved passages from one source entry, pairing each
+/// `document[i]` chunk with its `metadata[i]` (see the [Open WebUI
+/// sources schema](crate::server#note-open-webui-sources-schema) note).
+/// Sources without a `document` array (or whose entries are not strings)
+/// yield no excerpts.
+pub fn source_excerpts(source: &Value) -> Vec<Excerpt> {
+    let Some(documents) = source["document"].as_array() else {
+        return Vec::new();
+    };
+    let metadata = source["metadata"].as_array();
+
+    documents
+        .iter()
+        .enumerate()
+        .filter_map(|(index, document)| {
+            let text = document.as_str()?.to_string();
+            let page = metadata
+                .and_then(|entries| entries.get(index))
+                .and_then(excerpt_page);
+
+            Some(Excerpt { page, text })
+        })
+        .collect()
+}
+
+/// Reads a human-facing page label from a `metadata` entry. It tries
+/// `page_label` (a 1-based string) before the 0-based `page` and
+/// accepting either a string or a number (see the [Open WebUI sources
+/// schema](crate::server#note-open-webui-sources-schema) note).
+/// Returns `None` when neither is present.
+fn excerpt_page(metadata: &Value) -> Option<String> {
+    for key in ["page_label", "page"] {
+        match &metadata[key] {
+            Value::String(s) if !s.is_empty() => {
+                return Some(s.clone());
+            }
+            Value::Number(n) => return Some(n.to_string()),
+            _ => {}
+        }
+    }
+
+    None
 }
 
 /// Removes the leading `<think></think>` block from a complete
@@ -1175,23 +1267,9 @@ mod tests {
     }
 
     // The source-object fixtures in the tests below mirror the `sources`
-    // array Open WebUI returns from /api/chat/completions for a RAG
-    // request, so that resolution is tested against the real schema.
-    //
-    // Schema reference: open-webui v0.9.6 (tag commit
-    // 1a97751e376e00a1897bc3679215ae1c7bd8fd42),
-    // backend/open_webui/retrieval/utils.py, get_sources_from_items:
-    //
-    //     source = {
-    //         'source':   query_result['file'],        # item: {type, id, name}
-    //         'document': query_result['documents'][0],  # chunk strings
-    //         'metadata': query_result['metadatas'][0],  # per-chunk dicts
-    //     }
-    //     if 'distances' in query_result and query_result['distances']:
-    //         source['distances'] = query_result['distances'][0]
-    //
-    // The uploaded file's UUID therefore lives at source["source"]["id"].
-    // That is the only field resolve_source_label trusts.
+    // array Open WebUI returns for a RAG request, so that resolution is
+    // tested against the real schema.  See Note [Open WebUI sources
+    // schema] for details and the version it is pinned to.
 
     /// A source that has the structure of the output of
     /// `get_sources_from_items`, citing `file_id` across `n` retrieved
@@ -1278,6 +1356,57 @@ mod tests {
             ),
             Some("file_b.md".to_string())
         );
+    }
+
+    #[test]
+    fn source_excerpts_pairs_documents_with_pages() {
+        // The page label is read from the matching metadata entry.
+        let source = fake_source("uuid-b", "handbook.pdf", 2);
+        let excerpts = source_excerpts(&source);
+
+        assert_eq!(excerpts.len(), 2);
+        assert_eq!(excerpts[0].text, "...retrieved passage...");
+        assert_eq!(excerpts[0].page, Some("1".to_string()));
+        assert_eq!(excerpts[1].page, Some("2".to_string()));
+    }
+
+    #[test]
+    fn source_excerpts_handles_missing_pages_and_documents() {
+        use serde_json::json;
+
+        // Text is extracted even if `page` is not in metadata.
+        let no_page = json!({
+            "source": {"id": "uuid-a"},
+            "document": ["a passage"],
+            "metadata": [{"file_id": "uuid-a"}],
+        });
+        let excerpts = source_excerpts(&no_page);
+        assert_eq!(excerpts.len(), 1);
+        assert_eq!(excerpts[0].page, None);
+        assert_eq!(excerpts[0].text, "a passage");
+
+        // A source with no `document` array yields nothing.
+        let no_docs = json!({"source": {"id": "uuid-a"}});
+        assert!(source_excerpts(&no_docs).is_empty());
+    }
+
+    #[test]
+    fn excerpt_page_prefers_page_label_over_page() {
+        use serde_json::json;
+
+        // 1-based `page_label` is picked over the raw 0-based `page`.
+        assert_eq!(
+            excerpt_page(&json!({"page": 11, "page_label": "12"})),
+            Some("12".to_string())
+        );
+
+        // Falls back to numeric `page` when no label is present.
+        assert_eq!(
+            excerpt_page(&json!({"page": 4})),
+            Some("4".to_string())
+        );
+
+        assert_eq!(excerpt_page(&json!({})), None);
     }
 
     #[test]
