@@ -417,9 +417,12 @@ struct RagUpload {
 /// schema](crate::server#note-open-webui-sources-schema) note.
 ///
 /// In text mode, the sources are appended to stdout as a Markdown-like
-/// footer, printed as the last part of the answer.  Each source's UUID
-/// is resolved back to the original filename when it matches one of the
-/// `uploads`, falling back to [`server::source_label`] otherwise.
+/// footer.  Each is numbered with the citation number Open WebUI gave
+/// the model (so it lines up with any inline citations in the answer),
+/// and its UUID is resolved back to the original filename when it
+/// matches one of the `uploads`, falling back to
+/// [`server::source_label`] otherwise.  Uploaded files that no source
+/// cited are listed separately below.
 ///
 /// In `--output-json` mode, they are emitted as a final JSON object so
 /// stdout stays valid JSON.  Each resolvable source gains a
@@ -439,11 +442,15 @@ fn report_sources(
         .map(|u| (u.id.clone(), u.name.clone()))
         .collect();
 
+    let numbers = server::citation_numbers(sources);
+    let unused = unused_uploads(uploads, sources, &numbers);
+
     if !sources.is_empty() {
         if args.output_json {
             let with_resolved: Vec<serde_json::Value> = sources
                 .iter()
-                .map(|source| {
+                .enumerate()
+                .map(|(index, source)| {
                     let mut value = source.clone();
                     if let Some(object) = value.as_object_mut() {
                         if let Some(name) =
@@ -454,6 +461,10 @@ fn report_sources(
                                 serde_json::Value::String(name),
                             );
                         }
+                        object.insert(
+                            "citation".to_string(),
+                            serde_json::json!(numbers[index]),
+                        );
                         if !args.hide_excerpts {
                             object.insert(
                                 "excerpts".to_string(),
@@ -467,6 +478,7 @@ fn report_sources(
 
             let json = serde_json::to_string(&serde_json::json!({
                 "sources": with_resolved,
+                "unused": unused,
             }))
             .map_err(|x| x.to_string())?;
 
@@ -475,17 +487,32 @@ fn report_sources(
             print!("\n\n---\n");
 
             for (index, source) in sources.iter().enumerate() {
+                // Skip if the source contributed no chunk: the model
+                // was never shown it, so it has no citation number.
+                let Some(number) = numbers[index] else {
+                    continue;
+                };
+
                 let label =
                     server::resolve_source_label(source, &pairs)
                         .unwrap_or_else(|| {
                             server::source_label(source)
                         });
 
-                print!("\n{}. `{}`", index + 1, label);
+                print!("\n{number}. `{label}`");
 
                 if !args.hide_excerpts {
                     print_excerpts(source);
                 }
+            }
+
+            if !unused.is_empty() {
+                let names: Vec<String> =
+                    unused.iter().map(|n| format!("`{n}`")).collect();
+                print!(
+                    "\n\n(uploaded but not retrieved: {})",
+                    names.join(", ")
+                );
             }
 
             println!();
@@ -501,6 +528,35 @@ fn report_sources(
     }
 
     Ok(())
+}
+
+/// Returns the display names of uploads that no source cited.
+///
+/// Matches by UUID (`source.source.id`, see the [Open WebUI sources
+/// schema](crate::server#note-open-webui-sources-schema) note in
+/// server.rs), never by filename, so same-basename uploads with
+/// distinct UUIDs are distinguished.
+fn unused_uploads<'a>(
+    uploads: &'a [RagUpload],
+    sources: &[serde_json::Value],
+    numbers: &[Option<usize>],
+) -> Vec<&'a str> {
+    let retrieved: Vec<&str> = sources
+        .iter()
+        .zip(numbers)
+        .filter(|(_, number)| {
+            // `numbers[i]` is `Some` exactly when source `i`
+            // contributed a chunk, i.e., it was actually retrieved.
+            number.is_some()
+        })
+        .filter_map(|(source, _)| source["source"]["id"].as_str())
+        .collect();
+
+    uploads
+        .iter()
+        .filter(|u| !retrieved.contains(&u.id.as_str()))
+        .map(|u| u.name.as_str())
+        .collect()
 }
 
 /// The longest excerpt printed in the text footer before truncation.
@@ -794,6 +850,58 @@ mod tests {
 
         let args = Args::try_parse_from(["lui", "foo"]).unwrap();
         assert!(!args.hide_excerpts);
+    }
+
+    #[test]
+    fn unused_uploads_finds_uncited_files_by_uuid() {
+        use serde_json::json;
+
+        let upload = |id: &str, name: &str| RagUpload {
+            id: id.to_string(),
+            name: name.to_string(),
+        };
+
+        // Two uploads with the same basename `report.pdf` but distinct
+        // UUIDs.  Only `id-b` was retrieved.  Matching by UUID (not name)
+        // must report exactly `dir_a/report.pdf` as unused, by its full
+        // path.
+        let uploads = vec![
+            upload("id-a", "dir_a/report.pdf"),
+            upload("id-b", "dir_b/report.pdf"),
+        ];
+        let sources = vec![json!({
+            "source": {"id": "id-b", "type": "file"},
+            "document": ["text"],
+            "metadata": [{"source": "report.pdf"}],
+        })];
+        let numbers = vec![Some(1)];
+
+        assert_eq!(
+            unused_uploads(&uploads, &sources, &numbers),
+            vec!["dir_a/report.pdf"]
+        );
+    }
+
+    #[test]
+    fn unused_uploads_counts_empty_document_sources_as_unused() {
+        use serde_json::json;
+
+        // The file came back as a source but with no chunks (number is
+        // None), so it was uploaded but not actually retrieved.
+        let uploads = vec![RagUpload {
+            id: "id-a".to_string(),
+            name: "notes.txt".to_string(),
+        }];
+        let sources = vec![json!({
+            "source": {"id": "id-a"},
+            "document": [],
+            "metadata": [],
+        })];
+
+        assert_eq!(
+            unused_uploads(&uploads, &sources, &[None]),
+            vec!["notes.txt"]
+        );
     }
 
     #[test]

@@ -794,6 +794,49 @@ pub fn resolve_source_label(
         .map(|(_, name)| name.clone())
 }
 
+/// Assigns each entry of `sources` the citation number that Open
+/// WebUI's `get_source_context` gives it, so a printed footer lines up
+/// with any inline `[N]` citation in the model's answer.
+///
+/// The number is the rank of each distinct citation among the
+/// document-bearing sources, in array order.  An entry that contributed
+/// no chunk (invisible to the model) gets `None` and consumes no
+/// number.  See the [Open WebUI sources
+/// schema](crate::server#note-open-webui-sources-schema) note.
+pub fn citation_numbers(sources: &[Value]) -> Vec<Option<usize>> {
+    let mut keys: Vec<String> = Vec::new();
+
+    sources
+        .iter()
+        .map(|source| {
+            let key = citation_key(source)?;
+
+            let position = match keys.iter().position(|k| k == &key) {
+                Some(position) => position,
+                None => {
+                    keys.push(key);
+                    keys.len() - 1
+                }
+            };
+
+            Some(position + 1)
+        })
+        .collect()
+}
+
+/// Extract a citation's source ID.
+fn citation_key(source: &Value) -> Option<String> {
+    let _ = source["document"].as_array()?.first()?;
+    let metadata = source["metadata"].as_array()?.first()?;
+
+    let key = metadata["source"]
+        .as_str()
+        .or_else(|| source["source"]["id"].as_str())
+        .unwrap_or("N/A");
+
+    Some(key.to_string())
+}
+
 /// A retrieved passage from a RAG source.
 pub struct Excerpt {
     pub page: Option<String>,
@@ -1356,6 +1399,52 @@ mod tests {
             ),
             Some("file_b.md".to_string())
         );
+    }
+
+    #[test]
+    fn citation_numbers_rank_distinct_document_bearing_sources() {
+        // `fake_source` has no `metadata.source`, so the key falls back
+        // to `source.source.id`.  Two distinct files rank 1 and 2.
+        let sources = vec![
+            fake_source("uuid-a", "a.pdf", 2),
+            fake_source("uuid-b", "b.pdf", 3),
+        ];
+        assert_eq!(citation_numbers(&sources), vec![Some(1), Some(2)]);
+    }
+
+    #[test]
+    fn citation_numbers_skip_sources_with_no_documents() {
+        use serde_json::json;
+
+        // An empty-document source is invisible to the model.  It gets
+        // no number and does not bump the source that follows it.
+        let sources = vec![
+            fake_source("uuid-a", "a.pdf", 1),
+            json!({"source": {"id": "uuid-x"}, "document": [], "metadata": []}),
+            fake_source("uuid-b", "b.pdf", 1),
+        ];
+        assert_eq!(
+            citation_numbers(&sources),
+            vec![Some(1), None, Some(2)]
+        );
+    }
+
+    #[test]
+    fn citation_numbers_share_a_number_for_one_key() {
+        use serde_json::json;
+
+        // Open WebUI uses `metadata.source` as the key, so two entries
+        // with the same basename collapse to one citation number.
+        // (This is Open WebUI's own limitation, faithfully mirrored.)
+        let chunk = |name: &str| {
+            json!({
+                "source": {"id": "ignored", "type": "file"},
+                "document": ["text"],
+                "metadata": [{"source": name}],
+            })
+        };
+        let sources = vec![chunk("report.pdf"), chunk("report.pdf")];
+        assert_eq!(citation_numbers(&sources), vec![Some(1), Some(1)]);
     }
 
     #[test]
