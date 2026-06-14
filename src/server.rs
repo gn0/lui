@@ -271,7 +271,7 @@ impl Server {
             .read_json()
             .map_err(|x| format!("{x}"))?;
 
-        let array = value
+        let array = value["items"]
             .as_array()
             .ok_or_else(|| "malformed file list".to_string())?;
 
